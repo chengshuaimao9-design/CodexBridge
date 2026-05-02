@@ -59,6 +59,59 @@ test('CodexAppClient listThreads returns preview rows and nextCursor', async () 
   });
 });
 
+test('CodexAppClient forwards archive filters and archive/unarchive RPCs', async () => {
+  const client = new CodexAppClient({
+    codexCliBin: 'codex',
+  });
+  const calls: Array<{ method: string; params: any }> = [];
+
+  client.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'thread/list') {
+      return { data: [], nextCursor: null };
+    }
+    if (method === 'thread/archive' || method === 'thread/unarchive') {
+      return {};
+    }
+    throw new Error(`Unexpected method: ${method}`);
+  };
+
+  await client.listThreads({ archived: true });
+  await client.archiveThread('thread-1');
+  await client.unarchiveThread('thread-1');
+
+  assert.equal(calls[0]?.method, 'thread/list');
+  assert.equal(calls[0]?.params.archived, true);
+  assert.deepEqual(calls[1], { method: 'thread/archive', params: { threadId: 'thread-1' } });
+  assert.deepEqual(calls[2], { method: 'thread/unarchive', params: { threadId: 'thread-1' } });
+});
+
+test('CodexAppClient forwards thread title and ephemeral start requests', async () => {
+  const client = new CodexAppClient({
+    codexCliBin: 'codex',
+  });
+  let seenParams: any = null;
+
+  client.request = async (method, params) => {
+    assert.equal(method, 'thread/start');
+    seenParams = params;
+    return {
+      thread: { id: 'thread-1', name: 'Parser' },
+      cwd: '/tmp/work',
+    };
+  };
+
+  const started = await client.startThread({
+    cwd: '/tmp/work',
+    title: 'Assistant Record Command Skill',
+    ephemeral: true,
+  });
+
+  assert.equal(seenParams.title, 'Assistant Record Command Skill');
+  assert.equal(seenParams.ephemeral, true);
+  assert.equal(started.threadId, 'thread-1');
+});
+
 test('CodexAppClient normalizes second-based thread timestamps to milliseconds', async () => {
   const client = new CodexAppClient({
     codexCliBin: 'codex',

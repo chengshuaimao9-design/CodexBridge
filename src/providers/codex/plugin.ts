@@ -83,10 +83,12 @@ export class CodexProviderPlugin {
     providerProfile,
     cwd = null,
     title = null,
+    ephemeral = null,
   }: {
     providerProfile: ProviderProfile;
     cwd?: string | null;
     title?: string | null;
+    ephemeral?: boolean | null;
   }): Promise<ProviderThreadStartResult> {
     const client = await this.ensureClient(providerProfile);
     const modelInfo = await this.resolveModelInfo(providerProfile, client, null);
@@ -94,6 +96,7 @@ export class CodexProviderPlugin {
       cwd,
       title,
       model: modelInfo?.model ?? null,
+      ephemeral,
     });
   }
 
@@ -119,14 +122,38 @@ export class CodexProviderPlugin {
     limit = 20,
     cursor = null,
     searchTerm = null,
+    archived = false,
   }: {
     providerProfile: ProviderProfile;
     limit?: number;
     cursor?: string | null;
     searchTerm?: string | null;
+    archived?: boolean | null;
   }): Promise<ProviderThreadListResult> {
     const client = await this.ensureClient(providerProfile);
-    return client.listThreads({ limit, cursor, searchTerm });
+    return client.listThreads({ limit, cursor, searchTerm, archived: Boolean(archived) });
+  }
+
+  async archiveThread({
+    providerProfile,
+    threadId,
+  }: {
+    providerProfile: ProviderProfile;
+    threadId: string;
+  }): Promise<void> {
+    const client = await this.ensureClient(providerProfile);
+    await client.archiveThread(threadId);
+  }
+
+  async unarchiveThread({
+    providerProfile,
+    threadId,
+  }: {
+    providerProfile: ProviderProfile;
+    threadId: string;
+  }): Promise<void> {
+    const client = await this.ensureClient(providerProfile);
+    await client.unarchiveThread(threadId);
   }
 
   async resumeThread({
@@ -504,6 +531,12 @@ export class CodexProviderPlugin {
 
   getClient(profileId: string): any {
     return this.clients.get(profileId) ?? null;
+  }
+
+  async stop(): Promise<void> {
+    const clients = [...this.clients.values()];
+    this.clients.clear();
+    await Promise.allSettled(clients.map((client) => client?.stop?.()));
   }
 
   async ensureClient(providerProfile: ProviderProfile): Promise<any> {

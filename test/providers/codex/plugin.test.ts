@@ -60,6 +60,31 @@ function makePluginWithReviewRunner(clientFactory: any, reviewRunner: any) {
   });
 }
 
+test('CodexProviderPlugin stop shuts down started app clients', async () => {
+  const stopped: string[] = [];
+  const plugin = makePlugin((profile: any) => ({
+      async start() {},
+      async listThreads() {
+        return { items: [], nextCursor: null };
+      },
+      async stop() {
+        stopped.push(profile.id);
+      },
+    }));
+  const firstProfile = makeProfile({ defaultModel: 'gpt-5.4' });
+  const secondProfile = {
+    ...makeProfile({ defaultModel: 'gpt-5.4' }),
+    id: 'openai-alt',
+  };
+
+  await plugin.listThreads({ providerProfile: firstProfile });
+  await plugin.listThreads({ providerProfile: secondProfile });
+  await plugin.stop();
+
+  assert.deepEqual(stopped.sort(), ['openai-alt', 'openai-default']);
+  assert.equal(plugin.getClient('openai-default'), null);
+});
+
 test('CodexProviderPlugin uses per-profile clients and forwards default model into startThread/startTurn', async () => {
   const calls = [];
   let seenDeveloperInstructions = null;
@@ -142,6 +167,45 @@ test('CodexProviderPlugin uses per-profile clients and forwards default model in
   assert.match(String(seenDeveloperInstructions ?? ''), /Standard bridge turn\./);
   assert.match(String(seenDeveloperInstructions ?? ''), /Do not call tool_suggest/);
   assert.match(String(seenDeveloperInstructions ?? ''), /thread\/session lifecycle, slash-command state transitions, and final platform delivery/i);
+});
+
+test('CodexProviderPlugin forwards ephemeral start and thread archive RPCs', async () => {
+  const calls: any[] = [];
+  const plugin = makePlugin((profile: any) => ({
+    async start() {},
+    async startThread(params: any) {
+      calls.push(['startThread', profile.id, params.ephemeral]);
+      return {
+        threadId: 'thread-1',
+        cwd: params.cwd ?? null,
+        title: params.title ?? null,
+      };
+    },
+    async archiveThread(threadId: string) {
+      calls.push(['archiveThread', profile.id, threadId]);
+    },
+    async unarchiveThread(threadId: string) {
+      calls.push(['unarchiveThread', profile.id, threadId]);
+    },
+    async listModels() {
+      return [];
+    },
+  }));
+  const profile = makeProfile();
+
+  await plugin.startThread({
+    providerProfile: profile,
+    cwd: '/tmp/work',
+    ephemeral: true,
+  });
+  await plugin.archiveThread({ providerProfile: profile, threadId: 'thread-1' });
+  await plugin.unarchiveThread({ providerProfile: profile, threadId: 'thread-1' });
+
+  assert.deepEqual(calls, [
+    ['startThread', 'openai-default', true],
+    ['archiveThread', 'openai-default', 'thread-1'],
+    ['unarchiveThread', 'openai-default', 'thread-1'],
+  ]);
 });
 
 test('CodexProviderPlugin normalizes legacy service tier values before calling the app client', async () => {
@@ -1029,7 +1093,7 @@ test('CodexProviderPlugin forwards thread list paging and includeTurns reads to 
   });
   assert.equal(thread.threadId, 'thread-1');
   assert.deepEqual(calls, [
-    ['listThreads', { limit: 5, cursor: 'cursor-1', searchTerm: 'bridge' }],
+    ['listThreads', { limit: 5, cursor: 'cursor-1', searchTerm: 'bridge', archived: false }],
     ['readThread', 'thread-1', true],
   ]);
 });

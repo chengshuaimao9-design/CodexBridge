@@ -456,14 +456,14 @@ export class CodexAppClient extends EventEmitter {
     limit?: number;
     cursor?: string | null;
     searchTerm?: string | null;
-    archived?: boolean;
+    archived?: boolean | null;
   } = {}): Promise<ProviderThreadListResult> {
     const result: any = await this.request('thread/list', {
       limit,
       cursor,
       sortKey: 'updated_at',
       searchTerm,
-      archived,
+      archived: Boolean(archived),
     }, { timeoutMs: 30_000 });
     const rows = Array.isArray(result?.data) ? result.data : [];
     return {
@@ -477,21 +477,34 @@ export class CodexAppClient extends EventEmitter {
     return result?.thread ? mapThread(result.thread, includeTurns) : null;
   }
 
+  async archiveThread(threadId: string): Promise<void> {
+    await this.request('thread/archive', { threadId }, { timeoutMs: 30_000 });
+  }
+
+  async unarchiveThread(threadId: string): Promise<void> {
+    await this.request('thread/unarchive', { threadId }, { timeoutMs: 30_000 });
+  }
+
   async startThread({
     cwd = null,
+    title = null,
     model = null,
     serviceTier = null,
     sandboxMode = 'workspace-write',
     approvalPolicy = 'on-request',
+    ephemeral = null,
   }: {
     cwd?: string | null;
+    title?: string | null;
     model?: string | null;
     serviceTier?: string | null;
     sandboxMode?: string;
     approvalPolicy?: string;
+    ephemeral?: boolean | null;
   } = {}): Promise<ProviderThreadStartResult> {
     const result: any = await this.request('thread/start', {
       cwd,
+      title,
       approvalPolicy,
       model,
       modelProvider: null,
@@ -502,7 +515,7 @@ export class CodexAppClient extends EventEmitter {
       baseInstructions: null,
       developerInstructions: null,
       personality: null,
-      ephemeral: null,
+      ephemeral,
       experimentalRawEvents: true,
       persistExtendedHistory: false,
     }, { timeoutMs: 30_000 });
@@ -2269,6 +2282,11 @@ function summarizeTurnInput(input: CodexTurnInput[]) {
 
 function summarizeRpcParams(method: string, params: any) {
   switch (method) {
+    case 'thread/archive':
+    case 'thread/unarchive':
+      return {
+        threadId: String(params?.threadId ?? ''),
+      };
     case 'thread/read':
       return {
         threadId: String(params?.threadId ?? ''),
@@ -2277,10 +2295,12 @@ function summarizeRpcParams(method: string, params: any) {
     case 'thread/start':
       return {
         cwd: params?.cwd ?? null,
+        title: params?.title ?? null,
         model: params?.model ?? null,
         serviceTier: params?.serviceTier ?? null,
         sandbox: params?.sandbox ?? null,
         approvalPolicy: params?.approvalPolicy ?? null,
+        ephemeral: params?.ephemeral ?? null,
       };
     case 'turn/start':
       return {
@@ -2306,6 +2326,12 @@ function summarizeRpcParams(method: string, params: any) {
 
 function summarizeRpcResult(method: string, result: any) {
   switch (method) {
+    case 'thread/archive':
+      return {};
+    case 'thread/unarchive':
+      return {
+        threadId: String(result?.thread?.id ?? ''),
+      };
     case 'thread/read':
       return summarizeThreadReadResult(result?.thread ?? null);
     case 'thread/start':

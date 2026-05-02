@@ -330,7 +330,6 @@ export class BridgeSessionService {
         .map((metadata) => [metadata.threadId, metadata] as const),
     );
     const providerPlugin = this.providerRegistry.getProvider(providerProfile.providerKind);
-    let providerCursor: string | null = null;
     const remoteItems: Array<{
       threadId: string;
       title: string | null;
@@ -345,54 +344,65 @@ export class BridgeSessionService {
     const seenThreadIds = new Set<string>();
     const remotePageLimit = Math.max(limit, 50);
 
-    while (true) {
-      const remoteResult = await providerPlugin.listThreads({
-        providerProfile,
-        limit: remotePageLimit,
-        cursor: providerCursor,
-        searchTerm,
-      });
-      const remoteThreads = Array.isArray(remoteResult)
-        ? remoteResult
-        : Array.isArray(remoteResult?.items)
-          ? remoteResult.items
-          : [];
-
-      for (const remoteThread of remoteThreads) {
-        if (!remoteThread?.threadId || seenThreadIds.has(remoteThread.threadId)) {
-          continue;
-        }
-        if (isHiddenBridgeInternalThread(remoteThread)) {
-          continue;
-        }
-        seenThreadIds.add(remoteThread.threadId);
-        const localSession = localByThreadId.get(remoteThread.threadId) ?? null;
-        const metadata = metadataByThreadId.get(remoteThread.threadId) ?? null;
-        const archivedAt = typeof metadata?.archivedAt === 'number' ? metadata.archivedAt : null;
-        const pinnedAt = typeof metadata?.pinnedAt === 'number' ? metadata.pinnedAt : null;
-        remoteItems.push({
-          threadId: remoteThread.threadId,
-          title: this.resolveThreadDisplayTitle({
-            providerProfileId: providerProfile.id,
-            threadId: remoteThread.threadId,
-            providerTitle: remoteThread.title ?? null,
-            fallbackTitle: localSession?.title ?? null,
-          }),
-          cwd: remoteThread.cwd ?? localSession?.cwd ?? null,
-          updatedAt: remoteThread.updatedAt ?? localSession?.updatedAt ?? null,
-          preview: remoteThread.preview ?? null,
-          turns: Array.isArray(remoteThread.turns) ? remoteThread.turns : [],
-          bridgeSessionId: localSession?.id ?? null,
-          archivedAt,
-          pinnedAt,
+    const appendRemoteThreads = async (remoteArchived: boolean) => {
+      let providerCursor: string | null = null;
+      while (true) {
+        const remoteResult = await providerPlugin.listThreads({
+          providerProfile,
+          limit: remotePageLimit,
+          cursor: providerCursor,
+          searchTerm,
+          archived: remoteArchived,
         });
-      }
+        const remoteThreads = Array.isArray(remoteResult)
+          ? remoteResult
+          : Array.isArray(remoteResult?.items)
+            ? remoteResult.items
+            : [];
 
-      const resolvedNextCursor = typeof remoteResult?.nextCursor === 'string' ? remoteResult.nextCursor : null;
-      if (!resolvedNextCursor || resolvedNextCursor === providerCursor) {
-        break;
+        for (const remoteThread of remoteThreads) {
+          if (!remoteThread?.threadId || seenThreadIds.has(remoteThread.threadId)) {
+            continue;
+          }
+          if (isBridgeInternalThread(remoteThread)) {
+            continue;
+          }
+          seenThreadIds.add(remoteThread.threadId);
+          const localSession = localByThreadId.get(remoteThread.threadId) ?? null;
+          const metadata = metadataByThreadId.get(remoteThread.threadId) ?? null;
+          const archivedAt = typeof metadata?.archivedAt === 'number'
+            ? metadata.archivedAt
+            : remoteArchived ? Number(remoteThread.updatedAt ?? this.now()) || this.now() : null;
+          const pinnedAt = typeof metadata?.pinnedAt === 'number' ? metadata.pinnedAt : null;
+          remoteItems.push({
+            threadId: remoteThread.threadId,
+            title: this.resolveThreadDisplayTitle({
+              providerProfileId: providerProfile.id,
+              threadId: remoteThread.threadId,
+              providerTitle: remoteThread.title ?? null,
+              fallbackTitle: localSession?.title ?? null,
+            }),
+            cwd: remoteThread.cwd ?? localSession?.cwd ?? null,
+            updatedAt: remoteThread.updatedAt ?? localSession?.updatedAt ?? null,
+            preview: remoteThread.preview ?? null,
+            turns: Array.isArray(remoteThread.turns) ? remoteThread.turns : [],
+            bridgeSessionId: localSession?.id ?? null,
+            archivedAt,
+            pinnedAt,
+          });
+        }
+
+        const resolvedNextCursor = typeof remoteResult?.nextCursor === 'string' ? remoteResult.nextCursor : null;
+        if (!resolvedNextCursor || resolvedNextCursor === providerCursor) {
+          break;
+        }
+        providerCursor = resolvedNextCursor;
       }
-      providerCursor = resolvedNextCursor;
+    };
+
+    await appendRemoteThreads(false);
+    if (includeArchived) {
+      await appendRemoteThreads(true);
     }
 
     const filteredItems = remoteItems
@@ -541,6 +551,99 @@ export class BridgeSessionService {
     return nextMetadata;
   }
 
+  async updateProviderThreadArchiveState(providerProfileId: string, threadId: string, archived: boolean) {
+    const providerProfile = this.providerProfiles.get(providerProfileId);
+    if (!providerProfile) {
+      throw new NotFoundError(this.i18n.t('service.unknownProviderProfile', { id: providerProfileId }));
+    }
+    const providerPlugin = this.providerRegistry.getProvider(providerProfile.providerKind);
+    if (archived && typeof providerPlugin.archiveThread === 'function') {
+      await providerPlugin.archiveThread({ providerProfile, threadId });
+    } else if (!archived && typeof providerPlugin.unarchiveThread === 'function') {
+      await providerPlugin.unarchiveThread({ providerProfile, threadId });
+    }
+    return this.setProviderThreadArchived(providerProfileId, threadId, archived);
+  }
+
+  async archiveInternalProviderThreads(
+    providerProfileId: string,
+    {
+      limit = 100_000,
+      dryRun = false,
+    }: { limit?: number; dryRun?: boolean } = {},
+  ) {
+    const providerProfile = this.providerProfiles.get(providerProfileId);
+    if (!providerProfile) {
+      throw new NotFoundError(this.i18n.t('service.unknownProviderProfile', { id: providerProfileId }));
+    }
+    const providerPlugin = this.providerRegistry.getProvider(providerProfile.providerKind);
+    const pageLimit = Math.max(50, Math.min(Number(limit) || 100_000, 100_000));
+    let cursor: string | null = null;
+    let scanned = 0;
+    let matched = 0;
+    let archived = 0;
+    const failed: Array<{ threadId: string; error: string }> = [];
+    const matches: Array<{ threadId: string; title: string | null; preview: string | null }> = [];
+
+    while (scanned < pageLimit) {
+      const remoteResult = await providerPlugin.listThreads({
+        providerProfile,
+        limit: Math.min(100, pageLimit - scanned),
+        cursor,
+        archived: false,
+      });
+      const remoteThreads = Array.isArray(remoteResult)
+        ? remoteResult
+        : Array.isArray(remoteResult?.items)
+          ? remoteResult.items
+          : [];
+      if (remoteThreads.length === 0) {
+        break;
+      }
+      for (const remoteThread of remoteThreads) {
+        if (!remoteThread?.threadId || !isBridgeInternalThread(remoteThread)) {
+          scanned += 1;
+          continue;
+        }
+        scanned += 1;
+        matched += 1;
+        matches.push({
+          threadId: remoteThread.threadId,
+          title: remoteThread.title ?? null,
+          preview: remoteThread.preview ?? null,
+        });
+      }
+      const resolvedNextCursor = typeof remoteResult?.nextCursor === 'string' ? remoteResult.nextCursor : null;
+      if (!resolvedNextCursor || resolvedNextCursor === cursor) {
+        break;
+      }
+      cursor = resolvedNextCursor;
+    }
+
+    if (!dryRun) {
+      for (const match of matches) {
+        try {
+          await this.updateProviderThreadArchiveState(providerProfile.id, match.threadId, true);
+          archived += 1;
+        } catch (error) {
+          failed.push({
+            threadId: match.threadId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
+    return {
+      providerProfileId: providerProfile.id,
+      scanned,
+      matched,
+      archived,
+      failed,
+      matches,
+    };
+  }
+
   setProviderThreadPinned(providerProfileId: string, threadId: string, pinned: boolean) {
     const current = this.getThreadMetadata(providerProfileId, threadId);
     const nextMetadata: ThreadMetadata = {
@@ -580,21 +683,35 @@ export class BridgeSessionService {
   }
 }
 
-function isHiddenBridgeInternalThread(thread: { title?: string | null } | null | undefined): boolean {
+function isBridgeInternalThread(thread: { title?: string | null; preview?: string | null } | null | undefined): boolean {
   const title = String(thread?.title ?? '').trim();
-  if (!title) {
-    return false;
-  }
-  return new Set([
+  const preview = String(thread?.preview ?? '').trim();
+  if (new Set([
     'Artifact Delivery Intent Parser',
     'Assistant Record Classifier',
     'Assistant Record Router',
     'Assistant Record Rewriter',
+    'Assistant Record Command Skill',
     'Automation Draft Parser',
     'Automation Draft Editor',
+    'Automation Command Skill',
     'Agent Draft Parser',
     'Agent Draft Editor',
-  ]).has(title);
+    'Agent Command Skill',
+    'Agent Verifier',
+    'Review Command Skill',
+    'Review Result Localizer',
+    'Instructions Command Skill',
+    'Thread Command Skill',
+  ]).has(title)) {
+    return true;
+  }
+  return [
+    /^CodexBridge command skill invocation\./iu,
+    /^CodexBridge review result localizer\./iu,
+    /^CodexBridge agent result verifier\./iu,
+    /^你是 CodexBridge .*(?:草案|解析|分类|改写|重写|路由|归一化|规范化器)/iu,
+  ].some((pattern) => pattern.test(preview));
 }
 
 function normalizeCwd(value: string | null | undefined): string | null {

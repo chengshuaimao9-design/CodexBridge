@@ -305,6 +305,7 @@ export interface ProviderPluginContract {
     providerProfile: ProviderProfile;
     cwd?: string | null;
     title?: string | null;
+    ephemeral?: boolean | null;
     metadata?: Record<string, unknown>;
   }): Promise<ProviderThreadStartResult>;
   readThread(params: {
@@ -317,7 +318,16 @@ export interface ProviderPluginContract {
     limit?: number;
     cursor?: string | null;
     searchTerm?: string | null;
+    archived?: boolean | null;
   }): Promise<ProviderThreadListResult>;
+  archiveThread?(params: {
+    providerProfile: ProviderProfile;
+    threadId: string;
+  }): Promise<void>;
+  unarchiveThread?(params: {
+    providerProfile: ProviderProfile;
+    threadId: string;
+  }): Promise<void>;
   startTurn(params: {
     providerProfile: ProviderProfile;
     bridgeSession: BridgeSession;

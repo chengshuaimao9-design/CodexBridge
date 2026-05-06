@@ -6,6 +6,7 @@ Current release policy:
 
 - keep this package `private: true`
 - keep the export surface minimal while the API boundary stabilizes
+- keep package-local build output in `packages/codex-gateway/dist` so `package.json` export paths describe real artifacts
 - only revisit npm publication after live-provider coverage and CodexBridge integration contracts are stable
 
 Immutable target:

@@ -5,7 +5,7 @@
     "declaration": true,
     "declarationMap": true,
     "noEmit": false,
-    "outDir": "../../dist/packages/codex-gateway",
+    "outDir": "dist",
     "rootDir": "src"
   },
   "include": [

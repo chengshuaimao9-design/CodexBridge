@@ -78,6 +78,7 @@ Latest progress:
 - [x] Custom compatible profile JSON ignores invalid entries while preserving existing built-in preset, single-profile, and legacy config paths
 - [x] `scripts/check-codex-gateway-boundary.mjs` now enforces that legacy bridge-side shim files stay pure re-exports into `packages/codex-gateway`
 - [x] Package public-surface tests now lock `@codexbridge/codex-gateway` to an internal-only release channel (`private: true` + minimal exports/files) until the API boundary and live-provider matrix are stable
+- [x] Package `tsconfig` now emits into `packages/codex-gateway/dist`, and public-surface tests lock that build layout to the `package.json` exports/files contract
 
 ## Packaging Direction
 
@@ -95,6 +96,7 @@ Rules:
 - No workspace/monorepo conversion is required yet
 - Legacy CodexBridge provider paths may remain re-export shims during migration
 - Phase 5 decision on 2026-05-06: keep the package internal-only for now; do not widen npm/public surface until live-provider coverage and integration contracts are stable
+- Keep package-local build output aligned with `package.json` exports/files so the internal package can still be consumed exactly as declared
 
 ## Migration Plan
 
@@ -192,6 +194,7 @@ Frozen migration surface:
 ### Phase 5: Publish decision
 
 - [x] Decide whether to publish as `@codexbridge/codex-gateway`; keep it private/internal until the API boundary is stable
+- [x] Keep package metadata and package-local build output aligned so `exports` and `files` point at real artifacts
 - [ ] Optionally add a standalone HTTP proxy binary only after the package is stable. The first product target remains CodexBridge integration, not a public gateway
 
 ## Reference Usage

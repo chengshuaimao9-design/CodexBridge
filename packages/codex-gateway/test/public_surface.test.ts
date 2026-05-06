@@ -32,3 +32,21 @@ test('codex gateway package metadata stays internal-only while the boundary stab
   assert.deepEqual(Object.keys(packageJson.exports ?? {}).sort(), ['.', './package.json']);
   assert.deepEqual(packageJson.files, ['dist', 'README.md']);
 });
+
+test('codex gateway package metadata and build layout stay aligned', () => {
+  const packageJsonPath = path.resolve(import.meta.dirname, '../package.json');
+  const tsconfigPath = path.resolve(import.meta.dirname, '../tsconfig.json');
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as {
+    exports?: Record<string, { types?: string; default?: string } | string>;
+    files?: string[];
+  };
+  const tsconfig = JSON.parse(fs.readFileSync(tsconfigPath, 'utf8')) as {
+    compilerOptions?: { outDir?: string; rootDir?: string };
+  };
+
+  assert.equal(tsconfig.compilerOptions?.rootDir, 'src');
+  assert.equal(tsconfig.compilerOptions?.outDir, 'dist');
+  assert.equal((packageJson.exports?.['.'] as { types?: string })?.types, './dist/index.d.ts');
+  assert.equal((packageJson.exports?.['.'] as { default?: string })?.default, './dist/index.js');
+  assert.deepEqual(packageJson.files, ['dist', 'README.md']);
+});

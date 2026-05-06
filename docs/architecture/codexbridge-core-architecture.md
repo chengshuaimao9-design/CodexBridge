@@ -6,7 +6,7 @@
 
 Immutable product target:
 
-> CodexBridge 的目标是通过微信稳定暴露 Codex 原生能力，并在桥接层扩展微信命令和个人助理工作流；`@codexbridge/responses-adapter` 的目标是让 CodexBridge 能稳定接入多模型来源。
+> CodexBridge 的目标是通过微信稳定暴露 Codex 原生能力，并在桥接层扩展微信命令和个人助理工作流；`@codexbridge/codex-gateway` 的目标是让 Codex 稳定接入多模型来源。
 
 This target should not change during implementation. The route, package layout,
 and migration order may change as the code evolves, but changes should continue
@@ -245,11 +245,12 @@ Important rule:
 - switching to another provider profile creates a new bridge session
 - the platform binding moves, but the provider boundary stays clean
 
-## Responses Adapter Package Architecture
+## Codex Gateway Package Architecture
 
-The OpenAI-compatible protocol adapter should become an internal TypeScript
-package first, then a publishable npm package only after its API boundary is
-stable.
+The Codex Gateway protocol layer should stay as an internal TypeScript package
+first, then become a publishable npm package only after its API boundary is
+stable. The package target is broader than CodexBridge: it should help Codex run
+on OpenAI-compatible model providers.
 
 Target dependency direction:
 
@@ -258,7 +259,7 @@ WeChat / Telegram
   -> CodexBridge platform runtime
   -> Bridge core sessions and provider profiles
   -> OpenAICompatibleProviderPlugin
-  -> @codexbridge/responses-adapter
+  -> @codexbridge/codex-gateway
   -> upstream OpenAI-compatible Chat Completions provider
 ```
 
@@ -282,7 +283,7 @@ Codex app-server / Codex CLI
 Suggested internal package layout:
 
 ```text
-packages/responses-adapter/
+packages/codex-gateway/
   package.json
   tsconfig.json
   src/
@@ -370,31 +371,31 @@ Phase 0 validation baseline:
 
 Phase 1A establishes the package boundary:
 
-- package root: `packages/responses-adapter`
-- source entry: `packages/responses-adapter/src/index.ts`
-- package typecheck: `pnpm run responses-adapter:typecheck`
-- package build: `pnpm run responses-adapter:build`
-- package public-surface test: `pnpm run responses-adapter:test`
-- boundary check: `pnpm run responses-adapter:check-boundary`
+- package root: `packages/codex-gateway`
+- source entry: `packages/codex-gateway/src/index.ts`
+- package typecheck: `pnpm run codex-gateway:typecheck`
+- package build: `pnpm run codex-gateway:build`
+- package public-surface test: `pnpm run codex-gateway:test`
+- boundary check: `pnpm run codex-gateway:check-boundary`
 
 Phase 1B moves the first pure protocol/data slice into the package:
 
-- `packages/responses-adapter/src/capabilities/thinking_policy.ts`
-- `packages/responses-adapter/src/capabilities/cliproxy_model_catalog.ts`
-- `packages/responses-adapter/src/capabilities/capability_presets.ts`
+- `packages/codex-gateway/src/capabilities/thinking_policy.ts`
+- `packages/codex-gateway/src/capabilities/cliproxy_model_catalog.ts`
+- `packages/codex-gateway/src/capabilities/capability_presets.ts`
 
 Phase 1C moves the converter and stream translator implementation into the
 package:
 
-- `packages/responses-adapter/src/converters/responses_adapter.ts`
+- `packages/codex-gateway/src/converters/responses_adapter.ts`
 
 Phase 3 moves the local adapter HTTP server into the package:
 
-- `packages/responses-adapter/src/server/responses_adapter_server.ts`
+- `packages/codex-gateway/src/server/responses_adapter_server.ts`
 
 Phase 4 freezes package-boundary behavior with a fixture-based contract suite:
 
-- `packages/responses-adapter/test/contracts.test.ts`
+- `packages/codex-gateway/test/contracts.test.ts`
 - Responses request to Chat request conversion, including JSON/schema formatting
 - Chat response to Responses object conversion
 - Chat SSE to Responses SSE event conversion
@@ -424,16 +425,16 @@ existing provider code can migrate incrementally:
 
 ```text
 src/providers/openai_compatible/responses_adapter.ts
-  re-exports from packages/responses-adapter
+  re-exports from packages/codex-gateway
 
 src/providers/openai_compatible/responses_adapter_server.ts
-  re-exports from packages/responses-adapter
+  re-exports from packages/codex-gateway
 
 src/providers/openai_compatible/capability_presets.ts
-  re-exports from packages/responses-adapter
+  re-exports from packages/codex-gateway
 
 src/providers/shared/thinking_policy.ts
-  re-exports from packages/responses-adapter
+  re-exports from packages/codex-gateway
 ```
 
 This keeps the current bridge stable while creating a clean package boundary for

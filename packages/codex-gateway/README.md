@@ -1,12 +1,12 @@
-# @codexbridge/responses-adapter
+# @codexbridge/codex-gateway
 
-Internal package for the CodexBridge OpenAI-compatible protocol adapter.
+Internal package for the Codex Gateway protocol layer.
 
 Immutable target:
 
-> `@codexbridge/responses-adapter` lets CodexBridge reliably connect Codex
-> workflows to multiple model sources by translating protocol-layer behavior
-> between OpenAI Responses and OpenAI-compatible Chat Completions providers.
+> `@codexbridge/codex-gateway` lets Codex run on non-OpenAI and
+> OpenAI-compatible model providers by translating Codex-native Responses API
+> traffic into provider-specific APIs.
 
 This package owns only protocol behavior:
 
@@ -48,10 +48,10 @@ from CodexBridge core/platform/runtime/store/i18n.
 Package-level checks:
 
 ```bash
-pnpm run responses-adapter:check-boundary
-pnpm run responses-adapter:typecheck
-pnpm run responses-adapter:test
-pnpm run responses-adapter:build
+pnpm run codex-gateway:check-boundary
+pnpm run codex-gateway:typecheck
+pnpm run codex-gateway:test
+pnpm run codex-gateway:build
 ```
 
 Live OpenAI-compatible provider smoke tests are gated and must run through the

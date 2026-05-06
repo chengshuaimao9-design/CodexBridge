@@ -1,8 +1,8 @@
-export const RESPONSES_ADAPTER_PACKAGE_NAME = '@codexbridge/responses-adapter' as const;
+export const CODEX_GATEWAY_PACKAGE_NAME = '@codexbridge/codex-gateway' as const;
 
-export const RESPONSES_ADAPTER_PACKAGE_PHASE = 'phase-4-contracts' as const;
+export const CODEX_GATEWAY_PACKAGE_PHASE = 'phase-4-contracts' as const;
 
-export const RESPONSES_ADAPTER_OWNS = [
+export const CODEX_GATEWAY_OWNS = [
   'responses-to-chat-conversion',
   'chat-to-responses-conversion',
   'sse-stream-conversion',
@@ -13,10 +13,10 @@ export const RESPONSES_ADAPTER_OWNS = [
   'reasoning-thinking-policy',
   'provider-capabilities',
   'payload-rules',
-  'local-responses-adapter-server',
+  'local-codex-gateway-server',
 ] as const;
 
-export const RESPONSES_ADAPTER_DOES_NOT_OWN = [
+export const CODEX_GATEWAY_DOES_NOT_OWN = [
   'wechat-transport',
   'telegram-transport',
   'slash-commands',
@@ -32,9 +32,9 @@ export const RESPONSES_ADAPTER_DOES_NOT_OWN = [
   'artifact-delivery-policy',
 ] as const;
 
-export type ResponsesAdapterOwnedResponsibility = typeof RESPONSES_ADAPTER_OWNS[number];
+export type CodexGatewayOwnedResponsibility = typeof CODEX_GATEWAY_OWNS[number];
 
-export type ResponsesAdapterExcludedResponsibility = typeof RESPONSES_ADAPTER_DOES_NOT_OWN[number];
+export type CodexGatewayExcludedResponsibility = typeof CODEX_GATEWAY_DOES_NOT_OWN[number];
 
 export * from './capabilities/capability_presets.js';
 export * from './capabilities/cliproxy_model_catalog.js';

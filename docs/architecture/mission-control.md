@@ -756,7 +756,7 @@ should not own mission state.
 ### Phase 0: Create an internal package boundary
 
 - Create `packages/mission-control` as an internal TypeScript package.
-- Add root scripts similar to `responses-adapter`:
+- Add root scripts similar to `codex-gateway`:
   - `mission-control:typecheck`
   - `mission-control:test`
   - `mission-control:build`

@@ -5,7 +5,7 @@
     "declaration": true,
     "declarationMap": true,
     "noEmit": false,
-    "outDir": "../../dist/packages/responses-adapter",
+    "outDir": "../../dist/packages/codex-gateway",
     "rootDir": "src"
   },
   "include": [

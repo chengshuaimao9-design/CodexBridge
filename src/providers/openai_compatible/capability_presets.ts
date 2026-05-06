@@ -1,1 +1,1 @@
-export * from '../../../packages/responses-adapter/src/capabilities/capability_presets.js';
+export * from '../../../packages/codex-gateway/src/capabilities/capability_presets.js';

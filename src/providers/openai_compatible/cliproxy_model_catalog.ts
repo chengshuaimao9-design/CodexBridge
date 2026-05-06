@@ -1,1 +1,1 @@
-export * from '../../../packages/responses-adapter/src/capabilities/cliproxy_model_catalog.js';
+export * from '../../../packages/codex-gateway/src/capabilities/cliproxy_model_catalog.js';

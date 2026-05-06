@@ -1,9 +1,9 @@
 {
-  "name": "@codexbridge/responses-adapter",
+  "name": "@codexbridge/codex-gateway",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Protocol adapter for exposing OpenAI Responses-compatible behavior over Chat Completions providers.",
+  "description": "Protocol gateway that lets Codex run on OpenAI-compatible model providers.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

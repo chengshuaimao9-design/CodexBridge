@@ -98,7 +98,7 @@ Rules:
 - `@codexbridge/mission-control -X-> CodexBridge platform/runtime/command code`
 - No workspace/monorepo conversion is required yet.
 - Follow the same internal-package pattern already used by
-  `packages/responses-adapter`.
+  `packages/codex-gateway`.
 
 Package bootstrap target:
 

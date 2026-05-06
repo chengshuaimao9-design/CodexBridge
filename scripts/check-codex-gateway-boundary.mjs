@@ -3,7 +3,7 @@ import path from 'node:path';
 import { builtinModules } from 'node:module';
 
 const repoRoot = process.cwd();
-const packageRoot = path.join(repoRoot, 'packages', 'responses-adapter');
+const packageRoot = path.join(repoRoot, 'packages', 'codex-gateway');
 const sourceRoot = path.join(packageRoot, 'src');
 const nodeBuiltins = new Set([
   ...builtinModules,
@@ -78,11 +78,11 @@ for (const file of listTypeScriptFiles(sourceRoot)) {
 }
 
 if (failures.length > 0) {
-  console.error('Responses adapter package boundary check failed:');
+  console.error('Codex Gateway package boundary check failed:');
   for (const failure of failures) {
     console.error(`- ${failure}`);
   }
   process.exit(1);
 }
 
-console.log('Responses adapter package boundary check passed.');
+console.log('Codex Gateway package boundary check passed.');

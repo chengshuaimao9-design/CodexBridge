@@ -127,6 +127,160 @@ test('adapter server trace sink captures request translation and non-streaming r
   }
 });
 
+test('adapter server trace sink captures downgrade and filter adjustments', async () => {
+  const events: any[] = [];
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    traceSink: (event) => {
+      events.push(JSON.parse(JSON.stringify(event)));
+    },
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+      multimodal: {
+        supportsImageInput: false,
+        supportsFileInput: false,
+        unsupportedInputPartStrategy: 'text-placeholder',
+      },
+      payload: {
+        filter: [
+          { paths: ['parallel_tool_calls'] },
+          { paths: ['response_format'] },
+        ],
+      },
+      modelCapabilities: {
+        'trace-model': {
+          maxOutputTokens: 1024,
+        },
+      },
+    },
+    fetchImpl: (async () => new Response(JSON.stringify({
+      id: 'chatcmpl_trace_adjustments',
+      created: 1_700_000_211,
+      model: 'trace-model',
+      choices: [{
+        message: {
+          content: 'trace answer',
+        },
+      }],
+    }), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    })) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'trace-model',
+        max_output_tokens: 4000,
+        parallel_tool_calls: true,
+        tool_choice: 'web_search_preview',
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'trace_response',
+            schema: {
+              type: 'object',
+            },
+          },
+        },
+        tools: [
+          {
+            type: 'function',
+            name: 'lookup',
+            parameters: {
+              type: 'object',
+              properties: {},
+            },
+          },
+          {
+            type: 'web_search_preview',
+          },
+        ],
+        input: [{
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'hello' },
+            { type: 'input_image', image_url: 'https://example.com/cat.png' },
+            { type: 'input_file', file_url: 'https://example.com/spec.pdf' },
+          ],
+        }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(events.map((event) => event.type), [
+      'request.received',
+      'request.translated',
+      'request.adjusted',
+      'response.translated',
+    ]);
+    assert.deepEqual(events[2].adjustments, [
+      {
+        kind: 'max_output_tokens_capped',
+        path: 'max_output_tokens',
+        reason: 'model_limit',
+        before: 4000,
+        after: 1024,
+      },
+      {
+        kind: 'field_filtered',
+        path: 'parallel_tool_calls',
+        reason: 'payload_filter',
+        before: true,
+      },
+      {
+        kind: 'field_filtered',
+        path: 'text.format',
+        reason: 'payload_filter_or_unsupported_format',
+        before: {
+          type: 'json_schema',
+          name: 'trace_response',
+          schema: {
+            type: 'object',
+          },
+        },
+      },
+      {
+        kind: 'tools_dropped',
+        path: 'tools',
+        reason: 'builtin_web_search_unsupported',
+        requestedCount: 1,
+        forwardedCount: 0,
+      },
+      {
+        kind: 'tool_choice_dropped',
+        path: 'tool_choice',
+        reason: 'unsupported_or_filtered',
+        before: 'web_search_preview',
+      },
+      {
+        kind: 'image_input_downgraded',
+        path: 'input.image',
+        reason: 'unsupported_input_part_strategy',
+        requestedCount: 1,
+        forwardedCount: 0,
+        strategy: 'text-placeholder',
+      },
+      {
+        kind: 'file_input_downgraded',
+        path: 'input.file',
+        reason: 'unsupported_input_part_strategy',
+        requestedCount: 1,
+        forwardedCount: 0,
+        strategy: 'text-placeholder',
+      },
+    ]);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('adapter server exposes model metadata from package boundary', async () => {
   const server = new OpenAICompatibleResponsesAdapterServer({
     apiKey: 'test-key',

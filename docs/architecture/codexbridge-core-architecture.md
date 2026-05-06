@@ -268,6 +268,7 @@ Current Phase 5 decision:
 - make the future IR boundary explicit in code: keep `openai-chat-compatible` on the current direct path, and gate Anthropic/Gemini-native targets behind a later IR decision instead of stretching the Chat shim
 - allow that standalone launcher to load dotenv-style env files inside the package itself, with explicit process env taking precedence over file defaults
 - allow package-local trace hooks for request/response/retry/stream transforms so provider-mapping failures can be debugged without depending on bridge runtime logging
+- let those trace hooks emit machine-readable `request.adjusted` events whenever compatibility rules filter fields, drop unsupported tools, cap output-token requests, or downgrade unsupported image/file input
 - allow the internal standalone launcher to emit those structured trace events to stderr as NDJSON for local protocol debugging
 - keep the standalone adapter Responses-first: `/models`, `/responses`, and `/responses/compact` are the primary routes, while `/v1/*` stays as a compatibility alias layer
 - only revisit publication after the protocol boundary is demonstrably stable

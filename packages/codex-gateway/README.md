@@ -104,7 +104,10 @@ structured output, and output-token limits.
 The adapter server also supports an optional package-local trace sink so
 request translation, response translation, retry behavior, and translated
 stream events can be debugged without reproducing issues through WeChat or
-CodexBridge runtime logs.
+CodexBridge runtime logs. Trace output also includes machine-readable
+`request.adjusted` events when compatibility rules filter fields, drop
+unsupported tools, cap output-token requests, or downgrade unsupported
+image/file input.
 
 It must not own bridge behavior:
 

@@ -60,6 +60,7 @@ interface CustomOpenAICompatibleProfileConfig {
   upstreamChatCompletionsPath?: unknown;
   ownedBy?: unknown;
   modelIds?: unknown;
+  modelCatalog?: unknown;
   modelCatalogPath?: unknown;
 }
 
@@ -198,6 +199,19 @@ function loadModelCatalog(modelCatalogPath: string | null): unknown {
   } catch {
     return null;
   }
+}
+
+function resolveModelCatalogSource({
+  modelCatalogRaw,
+  modelCatalogPath,
+}: {
+  modelCatalogRaw?: unknown;
+  modelCatalogPath: string | null;
+}): unknown {
+  if (modelCatalogRaw !== undefined) {
+    return modelCatalogRaw;
+  }
+  return loadModelCatalog(modelCatalogPath);
 }
 
 function pushProfile(profiles: CodexProviderProfile[], profile: CodexProviderProfile | null): void {
@@ -396,6 +410,7 @@ function buildCustomOpenAICompatibleProfileFromConfig({
       ?? preset.upstreamChatCompletionsPath,
     ownedBy: normalizeString(rawProfile.ownedBy) ?? preset.ownedBy,
     modelIds: parseFlexibleStringList(rawProfile.modelIds, preset.modelIds),
+    modelCatalogRaw: rawProfile.modelCatalog,
     modelCatalogPath: normalizeString(rawProfile.modelCatalogPath),
     capabilities: mergeOpenAICompatibleProviderCapabilities(
       preset.capabilities,
@@ -462,6 +477,7 @@ function buildOpenAICompatibleProfile({
   upstreamChatCompletionsPath,
   ownedBy,
   modelIds,
+  modelCatalogRaw,
   modelCatalogPath,
   capabilities,
   now,
@@ -478,12 +494,16 @@ function buildOpenAICompatibleProfile({
   upstreamChatCompletionsPath: string;
   ownedBy: string;
   modelIds: string[];
+  modelCatalogRaw?: unknown;
   modelCatalogPath: string | null;
   capabilities: OpenAICompatibleProviderCapabilities | null;
   now: number;
 }): CodexProviderProfile {
   const fileCatalog = buildOpenAICompatibleExternalModelCatalog({
-    raw: loadModelCatalog(modelCatalogPath),
+    raw: resolveModelCatalogSource({
+      modelCatalogRaw,
+      modelCatalogPath,
+    }),
     defaultModel,
     displayName,
     capabilities,

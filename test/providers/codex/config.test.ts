@@ -91,6 +91,50 @@ test('loadCodexProfilesFromEnv merges custom capability overrides for JSON-defin
   assert.equal(profile?.config.capabilities?.multimodal?.supportsFileInput, false);
 });
 
+test('loadCodexProfilesFromEnv supports inline model catalogs for JSON-defined compatible providers', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-inline-model-catalog-'));
+  const catalogPath = path.join(tempDir, 'compat-models.json');
+  fs.writeFileSync(catalogPath, JSON.stringify({
+    qwen: [{
+      id: 'file-model',
+      display_name: 'File Model',
+      max_completion_tokens: 1024,
+    }],
+  }));
+
+  const result = loadCodexProfilesFromEnv({
+    CODEX_REAL_BIN: '/usr/bin/codex',
+    CODEX_COMPAT_PROFILES_JSON: JSON.stringify([{
+      id: 'inline-catalog',
+      displayName: 'Inline Catalog',
+      baseUrl: 'https://provider.example/v1',
+      defaultModel: 'inline-model',
+      capabilityPreset: 'qwen',
+      modelCatalogPath: catalogPath,
+      modelCatalog: {
+        qwen: [{
+          id: 'inline-model',
+          display_name: 'Inline Model',
+          max_completion_tokens: 4096,
+          thinking: {
+            min: 128,
+            max: 8192,
+            zero_allowed: true,
+          },
+        }],
+      },
+    }]),
+  });
+
+  const profile = result.profiles.find((entry) => entry.id === 'inline-catalog');
+  const model = (profile?.config.modelCatalog as any[])[0];
+  assert.equal(model.id, 'inline-model');
+  assert.equal(model.displayName, 'Inline Model');
+  assert.equal(model.capabilities.maxOutputTokens, 4096);
+  assert.equal(profile?.config.capabilities?.modelCapabilities?.['inline-model']?.maxOutputTokens, 4096);
+  assert.equal((profile?.config.modelCatalog as any[]).some((entry) => entry.id === 'file-model'), false);
+});
+
 test('loadCodexProfilesFromEnv still accepts string capabilities as a preset alias', () => {
   const result = loadCodexProfilesFromEnv({
     CODEX_REAL_BIN: '/usr/bin/codex',

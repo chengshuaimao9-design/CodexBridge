@@ -417,6 +417,7 @@ Preset-backed compatible provider exposure should stay registration-driven:
 - `src/providers/codex/config.ts` should iterate that registration data instead of hardcoding one-off provider branches
 - additional arbitrary compatible providers may be declared through `CODEX_COMPAT_PROFILES_JSON` or `CODEX_COMPAT_PROFILES_PATH` so provider onboarding can stay config-first even outside the built-in preset list
 - custom compatible provider definitions may also merge `capabilityOverrides`, so many provider-specific quirks can stay in configuration instead of forcing new bridge-side branches
+- custom compatible provider definitions may also embed `modelCatalog`, so provider-specific model metadata can stay in configuration without requiring a separate file
 
 CodexBridge keeps all bridge/runtime behavior:
 

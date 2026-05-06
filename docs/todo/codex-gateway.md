@@ -62,7 +62,7 @@ Avoid frequent edits here unless the change is truly cross-cutting:
 
 ## Current Active Focus
 
-- [ ] Finish live-provider smoke coverage for Qwen/DashScope and OpenRouter once credentials are available
+- [ ] Finish live-provider smoke coverage for OpenRouter once credentials are available
 - [x] Keep new provider onboarding config-first and capability-driven instead of adding one-off provider classes
 - [x] Keep package ownership strictly at protocol/gateway level
 - [ ] Decide whether Phase 5 should remain internal-only or move toward publishable package form
@@ -74,6 +74,7 @@ Latest progress:
 - [x] `CODEX_COMPAT_PROFILES_JSON` can now declare multiple custom OpenAI-compatible provider profiles without adding new provider/plugin classes
 - [x] `CODEX_COMPAT_PROFILES_PATH` now supports file-based custom compatible provider lists, with inline JSON taking precedence for duplicate IDs
 - [x] Custom compatible provider definitions can now merge `capabilityOverrides`, so provider-specific tool/multimodal/thinking/retry quirks can often stay in config instead of code
+- [x] Custom compatible provider definitions can now embed `modelCatalog` directly, so provider onboarding can stay config-first even without a separate catalog file
 - [x] Custom compatible profile JSON ignores invalid entries while preserving existing built-in preset, single-profile, and legacy config paths
 - [x] `scripts/check-codex-gateway-boundary.mjs` now enforces that legacy bridge-side shim files stay pure re-exports into `packages/codex-gateway`
 
@@ -183,8 +184,8 @@ Frozen migration surface:
 - [x] Added `pnpm run test:live-openai-compatible` as the explicit gated live smoke entrypoint
 - [x] Profile-based live smoke harness verification run on 2026-05-06: default test path skips safely; gated path also skips when current shell has no DeepSeek, MiniMax, Qwen/DashScope, or OpenRouter profile env
 - [x] Added `CODEXBRIDGE_TEST_ENV_FILE` support to the test runner so gated live tests can load a service env file without printing secrets
-- [x] Live profile smoke run on 2026-05-06 with `/home/ubuntu/.config/codexbridge/weixin.service.env`: DeepSeek and MiniMax passed through real CodexBridge profiles
-- [ ] Live provider smoke remains pending for Qwen/DashScope and OpenRouter until credentials are available
+- [x] Live profile smoke run on 2026-05-06 with `/home/ubuntu/.config/codexbridge/weixin.service.env`: DeepSeek, MiniMax, and Qwen passed through real CodexBridge profiles
+- [ ] Live provider smoke remains pending for OpenRouter until credentials are available
 
 ### Phase 5: Publish decision
 

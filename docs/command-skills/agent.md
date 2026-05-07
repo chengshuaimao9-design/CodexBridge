@@ -125,6 +125,7 @@ These forms should normally be handled directly by Bridge and not invoke Codex:
 - `/agent del <index|id>`
 - `/agent rename <index|id> <title>`
 - `/agent confirm`
+- `/agent confirm <index|id> reject`
 - `/agent c`
 - `/agent cancel`
 - help flags such as `-h`, `--help`, `-help`, `-helps`

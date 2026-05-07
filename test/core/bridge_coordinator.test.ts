@@ -14,6 +14,7 @@ import {
 import {
   createMissionChecklistSnapshot,
   createMissionCycleResult,
+  transitionMission,
 } from '../../packages/mission-control/src/index.js';
 import { createCodexBridgeRuntime } from '../../src/runtime/bootstrap.js';
 
@@ -8150,6 +8151,103 @@ test('/agent list, show, result, stop, and retry prefer Mission Control runtime 
     const showRetriedText = showRetried.messages.map((message) => message.text).join('\n');
     assert.match(showRetriedText, /状态：排队中/);
     assert.doesNotMatch(showRetriedText, /所有验收项已满足。/);
+  } finally {
+    if (originalOpenAiKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = originalOpenAiKey;
+    }
+  }
+});
+
+test('/agent show and confirm resolve package-backed scope change proposals without new host commands', async () => {
+  const originalOpenAiKey = process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  try {
+    const { runtime } = makeRuntime({ defaultCwd: '/repo' });
+    await runtime.services.bridgeCoordinator.handleInboundEvent({
+      platform: 'weixin',
+      externalScopeId: 'wx-agent-plan-change-1',
+      text: '/agent 检查发布流程并补上 dry-run 验证',
+    });
+    const { index } = await fullyConfirmLatestAgentJob(runtime, 'wx-agent-plan-change-1');
+    const [job] = runtime.services.agentJobs.listForScope({
+      platform: 'weixin',
+      externalScopeId: 'wx-agent-plan-change-1',
+    });
+    const runningDetail = runtime.services.agentJobs.getMissionDetail(job.id);
+    const running = transitionMission(runningDetail!.mission, 'running', {
+      at: (runningDetail?.mission.updatedAt ?? 0) + 1,
+      activeAttemptId: `${job.id}-attempt-scope-change-1`,
+    });
+    running.attemptCount = 1;
+    runtime.services.agentJobs.getMissionRepository().saveMission(running);
+
+    runtime.services.agentJobs.proposePlanChange(job.id, {
+      rationale: '需要把 release dry-run 纳入验收条件。',
+      proposedExpectedOutput: '一份验证通过的修复总结，并附 release dry-run 结果。',
+      proposedAcceptanceCriteria: ['补丁存在', '测试通过', 'release dry-run 通过'],
+      proposedPlan: ['检查发布流程', '补齐 dry-run 验证', '重新核对验收条件'],
+    });
+
+    const showPending = await runtime.services.bridgeCoordinator.handleInboundEvent({
+      platform: 'weixin',
+      externalScopeId: 'wx-agent-plan-change-1',
+      text: `/agent show ${index}`,
+    });
+    const showPendingText = showPending.messages.map((message) => message.text).join('\n');
+    assert.match(showPendingText, /状态：等待确认范围变更/);
+    assert.match(showPendingText, /待确认范围变更：/);
+    assert.match(showPendingText, /变更原因：需要把 release dry-run 纳入验收条件。/);
+    assert.match(showPendingText, /拟更新交付物：一份验证通过的修复总结，并附 release dry-run 结果。/);
+    assert.match(showPendingText, /拟更新验收条件：/);
+    assert.match(showPendingText, /批准并继续：\/agent confirm 1/);
+    assert.match(showPendingText, /拒绝并继续当前清单：\/agent confirm 1 reject/);
+
+    const rejected = await runtime.services.bridgeCoordinator.handleInboundEvent({
+      platform: 'weixin',
+      externalScopeId: 'wx-agent-plan-change-1',
+      text: `/agent confirm ${index} reject`,
+    });
+    assert.match(rejected.messages.map((message) => message.text).join('\n'), /范围变更已拒绝/);
+    assert.equal(rejected.meta?.systemAction?.kind, 'run_agent_sweep');
+
+    const rejectedDetail = runtime.services.agentJobs.getMissionDetail(job.id);
+    assert.equal(rejectedDetail?.mission.status, 'queued');
+    assert.equal(rejectedDetail?.currentChecklistSnapshot?.version, 1);
+    assert.equal(rejectedDetail?.planChangeRequests.at(-1)?.status, 'rejected');
+
+    const rerunning = transitionMission(rejectedDetail!.mission, 'running', {
+      at: rejectedDetail!.mission.updatedAt + 1,
+      activeAttemptId: `${job.id}-attempt-scope-change-2`,
+    });
+    rerunning.attemptCount = 2;
+    runtime.services.agentJobs.getMissionRepository().saveMission(rerunning);
+
+    runtime.services.agentJobs.proposePlanChange(job.id, {
+      rationale: '确认后把 dry-run 结果正式纳入交付和验收。',
+      proposedExpectedOutput: '一份验证通过的修复总结，并附 release dry-run 结果。',
+      proposedAcceptanceCriteria: ['补丁存在', '测试通过', 'release dry-run 通过'],
+      proposedPlan: ['检查发布流程', '补齐 dry-run 验证', '重新核对验收条件'],
+    });
+
+    const approved = await runtime.services.bridgeCoordinator.handleInboundEvent({
+      platform: 'weixin',
+      externalScopeId: 'wx-agent-plan-change-1',
+      text: `/agent confirm ${index}`,
+    });
+    assert.match(approved.messages.map((message) => message.text).join('\n'), /范围变更已确认/);
+    assert.equal(approved.meta?.systemAction?.kind, 'run_agent_sweep');
+
+    const approvedDetail = runtime.services.agentJobs.getMissionDetail(job.id);
+    assert.equal(approvedDetail?.mission.status, 'queued');
+    assert.equal(approvedDetail?.mission.expectedOutput, '一份验证通过的修复总结，并附 release dry-run 结果。');
+    assert.deepEqual(
+      approvedDetail?.mission.acceptanceCriteria,
+      ['补丁存在', '测试通过', 'release dry-run 通过'],
+    );
+    assert.equal(approvedDetail?.currentChecklistSnapshot?.version, 2);
+    assert.equal(approvedDetail?.planChangeRequests.at(-1)?.status, 'applied');
   } finally {
     if (originalOpenAiKey === undefined) {
       delete process.env.OPENAI_API_KEY;

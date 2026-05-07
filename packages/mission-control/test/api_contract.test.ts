@@ -383,6 +383,156 @@ test('direct mission control api can sync a pristine mission from a refreshed so
   assert.equal(events[2]?.metadata.sourceRevision, 'manual-rev-2');
 });
 
+test('direct mission control api can propose and apply a scope change through a new checklist snapshot version', async () => {
+  const { repo, api, nowRef } = createApiHarness(1_701_200_060_500);
+  const queued = createQueuedMission(nowRef.value);
+  const running = transitionMission(queued, 'running', {
+    at: nowRef.value + 20,
+    activeAttemptId: 'attempt-api-plan-change-1',
+  });
+  running.attemptCount = 1;
+
+  repo.saveMission(running);
+  repo.saveWorkItem(createMissionWorkItem(running, { at: nowRef.value + 5 }));
+  repo.saveGeneration(createMissionGeneration(running, {
+    at: nowRef.value + 5,
+    trigger: 'initial',
+  }));
+  repo.saveChecklistSnapshot(createMissionChecklistSnapshot(running, {
+    at: nowRef.value + 6,
+    generationId: running.activeGenerationId,
+  }));
+
+  const proposed = await api.commands.proposePlanChange({
+    meta: {
+      requestId: 'req-plan-change-propose-1',
+      correlationId: null,
+      idempotencyKey: null,
+    },
+    input: {
+      missionId: running.id,
+      rationale: 'The release fix also needs a dry-run acceptance gate.',
+      proposedExpectedOutput: 'A verified repair summary plus release dry-run evidence.',
+      proposedAcceptanceCriteria: ['Patch exists', 'Tests prove the fix', 'Release dry-run passes'],
+      proposedPlan: ['Inspect the regression', 'Patch the code', 'Run the release dry-run'],
+      actor: {
+        actorId: 'test-host',
+        actorType: 'host',
+      },
+    },
+  });
+
+  assert.equal(proposed.data.mission.status, 'scope_change_pending');
+  assert.equal(proposed.data.planChangeRequests.length, 1);
+  assert.equal(proposed.data.planChangeRequests[0]?.status, 'proposed');
+  assert.match(proposed.data.pendingApproval?.summary ?? '', /scope change/i);
+
+  const approved = await api.commands.resolvePlanChange({
+    meta: {
+      requestId: 'req-plan-change-approve-1',
+      correlationId: null,
+      idempotencyKey: null,
+    },
+    input: {
+      missionId: running.id,
+      decision: 'approve',
+      actor: {
+        actorId: 'test-user',
+        actorType: 'user',
+      },
+    },
+  });
+
+  assert.equal(approved.data.mission.status, 'queued');
+  assert.equal(approved.data.pendingApproval, null);
+  assert.equal(approved.data.mission.expectedOutput, 'A verified repair summary plus release dry-run evidence.');
+  assert.deepEqual(
+    approved.data.mission.acceptanceCriteria,
+    ['Patch exists', 'Tests prove the fix', 'Release dry-run passes'],
+  );
+  assert.deepEqual(
+    approved.data.mission.plan,
+    ['Inspect the regression', 'Patch the code', 'Run the release dry-run'],
+  );
+  assert.equal(approved.data.currentChecklistSnapshot?.version, 2);
+  assert.equal(approved.data.currentChecklistSnapshot?.expectedOutput, 'A verified repair summary plus release dry-run evidence.');
+  assert.equal(approved.data.planChangeRequests[0]?.status, 'applied');
+  assert.equal(approved.data.planChangeRequests[0]?.decidedBy, 'test-user');
+  assert.equal(
+    repo.getChecklistSnapshotById('mission-api-1:checklist:1')?.supersededAt,
+    approved.data.currentChecklistSnapshot?.createdAt ?? null,
+  );
+  assert.equal(repo.getGenerationById('mission-api-1:generation:1')?.checklistSnapshotId, 'mission-api-1:checklist:2');
+  assert.equal(repo.getWorkItemById(running.workItemId)?.expectedOutput, 'A verified repair summary.');
+  assert.deepEqual(
+    repo.listEvents(running.id).map((event) => event.kind),
+    ['mission.scope_change_pending', 'mission.plan_change_applied'],
+  );
+});
+
+test('direct mission control api can reject a pending scope change and keep the current checklist version', async () => {
+  const { repo, api, nowRef } = createApiHarness(1_701_200_060_800);
+  const queued = createQueuedMission(nowRef.value);
+  const running = transitionMission(queued, 'running', {
+    at: nowRef.value + 20,
+    activeAttemptId: 'attempt-api-plan-change-2',
+  });
+  running.attemptCount = 1;
+
+  repo.saveMission(running);
+  repo.saveWorkItem(createMissionWorkItem(running, { at: nowRef.value + 5 }));
+  repo.saveGeneration(createMissionGeneration(running, {
+    at: nowRef.value + 5,
+    trigger: 'initial',
+  }));
+  repo.saveChecklistSnapshot(createMissionChecklistSnapshot(running, {
+    at: nowRef.value + 6,
+    generationId: running.activeGenerationId,
+  }));
+
+  await api.commands.proposePlanChange({
+    meta: {
+      requestId: 'req-plan-change-propose-2',
+      correlationId: null,
+      idempotencyKey: null,
+    },
+    input: {
+      missionId: running.id,
+      rationale: 'Do not broaden scope unless the operator explicitly approves it.',
+      proposedAcceptanceCriteria: ['Patch exists', 'Tests prove the fix', 'Release dry-run passes'],
+      proposedPlan: ['Inspect the regression', 'Patch the code', 'Run the release dry-run'],
+    },
+  });
+
+  const rejected = await api.commands.resolvePlanChange({
+    meta: {
+      requestId: 'req-plan-change-reject-1',
+      correlationId: null,
+      idempotencyKey: null,
+    },
+    input: {
+      missionId: running.id,
+      decision: 'reject',
+      actor: {
+        actorId: 'test-user',
+        actorType: 'user',
+      },
+    },
+  });
+
+  assert.equal(rejected.data.mission.status, 'queued');
+  assert.equal(rejected.data.pendingApproval, null);
+  assert.equal(rejected.data.currentChecklistSnapshot?.version, 1);
+  assert.deepEqual(rejected.data.mission.acceptanceCriteria, ['Patch exists', 'Tests prove the fix']);
+  assert.deepEqual(rejected.data.mission.plan, ['Inspect the regression', 'Patch the code', 'Verify the fix']);
+  assert.equal(rejected.data.planChangeRequests[0]?.status, 'rejected');
+  assert.equal(repo.listChecklistSnapshots(running.id).length, 1);
+  assert.deepEqual(
+    repo.listEvents(running.id).map((event) => event.kind),
+    ['mission.scope_change_pending', 'mission.plan_change_rejected'],
+  );
+});
+
 test('direct mission control api keeps pristine source sync history across repeated pre-attempt refreshes', async () => {
   const { repo, api, nowRef } = createApiHarness(1_701_200_061_000);
 

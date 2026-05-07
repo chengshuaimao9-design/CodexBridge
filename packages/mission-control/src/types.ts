@@ -88,6 +88,8 @@ export type MissionEventKind =
   | 'mission.waiting_user'
   | 'mission.needs_human'
   | 'mission.scope_change_pending'
+  | 'mission.plan_change_applied'
+  | 'mission.plan_change_rejected'
   | 'mission.handoff'
   | 'mission.blocked'
   | 'mission.max_loops_reached'

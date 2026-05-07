@@ -1,4 +1,5 @@
 import {
+  buildChecklistSnapshotId,
   createMissionChecklistSnapshot,
   createMissionGeneration,
   createMissionRetryAggregate,
@@ -61,6 +62,8 @@ import type {
   MissionAttemptsView,
   MissionTimelineEntry,
   MissionTimelineView,
+  ProposePlanChangeInput,
+  ResolvePlanChangeInput,
   StartMissionInput,
   ResumeMissionInput,
   RetryMissionInput,
@@ -105,6 +108,8 @@ export class DirectMissionControlApi implements MissionControlApi {
       createMission: (request) => this.handleCreateMission(request),
       startMission: (request) => this.handleStartMission(request),
       syncMissionSource: (request) => this.handleSyncMissionSource(request),
+      proposePlanChange: (request) => this.handleProposePlanChange(request),
+      resolvePlanChange: (request) => this.handleResolvePlanChange(request),
       retryMission: (request) => this.handleRetryMission(request),
       resumeMission: (request) => this.handleResumeMission(request),
       stopMission: (request) => this.handleStopMission(request),
@@ -430,6 +435,214 @@ export class DirectMissionControlApi implements MissionControlApi {
       },
     }));
     return withMeta(request.meta, this.buildMissionDetailView(syncedMission));
+  }
+
+  private handleProposePlanChange(
+    request: MissionControlRequest<ProposePlanChangeInput>,
+  ): MissionControlResponse<MissionDetailView> {
+    const mission = this.requireMission(request.input.missionId);
+    if (!canProposePlanChange(mission)) {
+      throw new Error(`Mission plan changes can only be proposed from active execution states: ${mission.id}`);
+    }
+    const existingProposed = getProposedPlanChangeRequests(this.repository, mission.id);
+    const proposedChange = resolvePlanChangeProposal(mission, request.input);
+    if (existingProposed.length > 0) {
+      if (isEquivalentPlanChangeRequest(existingProposed[0], proposedChange)) {
+        return withMeta(request.meta, this.buildMissionDetailView(mission));
+      }
+      throw new Error(`Mission already has a pending plan change request: ${mission.id}`);
+    }
+
+    const at = this.now();
+    const changeRequest = {
+      id: this.generateId(),
+      missionId: mission.id,
+      generationId: mission.activeGenerationId,
+      checklistSnapshotId: mission.currentChecklistSnapshotId,
+      status: 'proposed' as const,
+      rationale: proposedChange.rationale,
+      proposedExpectedOutput: proposedChange.proposedExpectedOutput,
+      proposedAcceptanceCriteria: [...proposedChange.proposedAcceptanceCriteria],
+      proposedPlan: [...proposedChange.proposedPlan],
+      createdAt: at,
+      decidedAt: null,
+      decidedBy: null,
+    };
+    const pendingMission = enterScopeChangePending(mission, {
+      at,
+      requestId: changeRequest.id,
+      rationale: changeRequest.rationale,
+    });
+    this.repository.savePlanChangeRequest(changeRequest);
+    this.repository.saveMission(pendingMission);
+    this.repository.appendEvent(this.createMissionEvent({
+      mission: pendingMission,
+      attemptId: pendingMission.activeAttemptId,
+      kind: 'mission.scope_change_pending',
+      summary: 'Mission is waiting for a scope change decision before continuing.',
+      metadata: {
+        planChangeRequestId: changeRequest.id,
+        rationale: changeRequest.rationale,
+        proposedExpectedOutput: changeRequest.proposedExpectedOutput,
+        proposedAcceptanceCriteria: [...changeRequest.proposedAcceptanceCriteria],
+        proposedPlan: [...changeRequest.proposedPlan],
+        ...buildActorMetadata(request.input.actor),
+      },
+    }));
+    return withMeta(request.meta, this.buildMissionDetailView(pendingMission));
+  }
+
+  private handleResolvePlanChange(
+    request: MissionControlRequest<ResolvePlanChangeInput>,
+  ): MissionControlResponse<MissionDetailView> {
+    const mission = this.requireMission(request.input.missionId);
+    const changeRequest = resolvePendingPlanChangeRequest(
+      this.repository,
+      mission.id,
+      request.input.planChangeRequestId ?? null,
+    );
+    if (!changeRequest) {
+      return withMeta(request.meta, this.buildMissionDetailView(mission));
+    }
+
+    const at = this.now();
+    const actorId = request.input.actor?.actorId ?? request.input.actor?.actorType ?? null;
+    const resolutionReason = normalizeText(request.input.reason);
+
+    if (request.input.decision === 'approve') {
+      const currentSnapshot = this.repository.getChecklistSnapshotById(mission.currentChecklistSnapshotId);
+      const proposedExpectedOutput = normalizeText(changeRequest.proposedExpectedOutput) ?? mission.expectedOutput;
+      const proposedAcceptanceCriteria = normalizeStringList(changeRequest.proposedAcceptanceCriteria);
+      const proposedPlan = normalizeStringList(changeRequest.proposedPlan);
+      const checklistChanged = proposedExpectedOutput !== mission.expectedOutput
+        || !isSameStringList(proposedAcceptanceCriteria, mission.acceptanceCriteria)
+        || !isSameStringList(proposedPlan, mission.plan);
+      const appliedMissionBase = transitionMission(mission, 'queued', {
+        at,
+        reason: resolutionReason ?? 'Mission queued after scope change approval.',
+        pendingApproval: null,
+        activeAttemptId: null,
+        lastError: null,
+        workpad: {
+          ...mission.workpad,
+          summary: 'Mission queued after applying the approved scope change.',
+          latestPlan: [...proposedPlan],
+          latestBlocker: null,
+          latestVerifierSummary: null,
+          updatedAt: at,
+        },
+      });
+      const appliedMission = checklistChanged
+        ? {
+          ...appliedMissionBase,
+          expectedOutput: proposedExpectedOutput,
+          acceptanceCriteria: [...proposedAcceptanceCriteria],
+          plan: [...proposedPlan],
+          currentChecklistSnapshotVersion: mission.currentChecklistSnapshotVersion + 1,
+          currentChecklistSnapshotId: buildChecklistSnapshotId(
+            mission.id,
+            mission.currentChecklistSnapshotVersion + 1,
+          ),
+          updatedAt: at,
+        }
+        : appliedMissionBase;
+
+      const appliedChangeRequest = {
+        ...changeRequest,
+        status: 'applied' as const,
+        decidedAt: at,
+        decidedBy: actorId,
+      };
+      this.repository.savePlanChangeRequest(appliedChangeRequest);
+
+      let appliedChecklistSnapshot = currentSnapshot;
+      if (checklistChanged) {
+        const nextChecklistSnapshot = createMissionChecklistSnapshot(appliedMission, {
+          at,
+          version: appliedMission.currentChecklistSnapshotVersion,
+          generationId: appliedMission.activeGenerationId,
+          sourceRevision: currentSnapshot?.sourceRevision ?? null,
+        });
+        appliedMission.currentChecklistSnapshotId = nextChecklistSnapshot.id;
+        appliedChecklistSnapshot = nextChecklistSnapshot;
+        if (currentSnapshot && currentSnapshot.id !== nextChecklistSnapshot.id) {
+          this.repository.saveChecklistSnapshot({
+            ...currentSnapshot,
+            supersededAt: at,
+            updatedAt: at,
+          });
+        }
+        const generation = this.repository.getGenerationById(appliedMission.activeGenerationId);
+        if (generation) {
+          this.repository.saveGeneration({
+            ...generation,
+            checklistSnapshotId: nextChecklistSnapshot.id,
+            updatedAt: at,
+          });
+        } else {
+          this.repository.saveGeneration(createMissionGeneration(appliedMission, {
+            at,
+            id: appliedMission.activeGenerationId,
+            index: appliedMission.activeGenerationIndex,
+            trigger: appliedMission.activeGenerationIndex === 1 ? 'initial' : 'retry',
+            checklistSnapshotId: nextChecklistSnapshot.id,
+            status: mapMissionStatusToGenerationStatus(appliedMission.status),
+          }));
+        }
+        this.repository.saveChecklistSnapshot(nextChecklistSnapshot);
+      }
+
+      this.repository.saveMission(appliedMission);
+      this.repository.appendEvent(this.createMissionEvent({
+        mission: appliedMission,
+        attemptId: null,
+        kind: 'mission.plan_change_applied',
+        summary: resolutionReason ?? 'Approved scope change applied; mission re-queued.',
+        metadata: {
+          planChangeRequestId: appliedChangeRequest.id,
+          checklistSnapshotId: appliedChecklistSnapshot?.id ?? appliedMission.currentChecklistSnapshotId,
+          checklistSnapshotVersion: appliedChecklistSnapshot?.version ?? appliedMission.currentChecklistSnapshotVersion,
+          checklistHash: appliedChecklistSnapshot?.hash ?? null,
+          ...buildActorMetadata(request.input.actor),
+        },
+      }));
+      return withMeta(request.meta, this.buildMissionDetailView(appliedMission));
+    }
+
+    const rejectedChangeRequest = {
+      ...changeRequest,
+      status: 'rejected' as const,
+      decidedAt: at,
+      decidedBy: actorId,
+    };
+    const resumedMission = transitionMission(mission, 'queued', {
+      at,
+      reason: resolutionReason ?? 'Mission queued after rejecting the proposed scope change.',
+      pendingApproval: null,
+      activeAttemptId: null,
+      lastError: null,
+      workpad: {
+        ...mission.workpad,
+        summary: 'Mission queued after rejecting the proposed scope change.',
+        latestPlan: [...mission.plan],
+        latestBlocker: null,
+        latestVerifierSummary: null,
+        updatedAt: at,
+      },
+    });
+    this.repository.savePlanChangeRequest(rejectedChangeRequest);
+    this.repository.saveMission(resumedMission);
+    this.repository.appendEvent(this.createMissionEvent({
+      mission: resumedMission,
+      attemptId: null,
+      kind: 'mission.plan_change_rejected',
+      summary: resolutionReason ?? 'Rejected the proposed scope change; mission re-queued with the current checklist.',
+      metadata: {
+        planChangeRequestId: rejectedChangeRequest.id,
+        ...buildActorMetadata(request.input.actor),
+      },
+    }));
+    return withMeta(request.meta, this.buildMissionDetailView(resumedMission));
   }
 
   private handleResumeMission(
@@ -867,6 +1080,8 @@ function buildActorMetadata(
     | CreateMissionCommandInput['actor']
     | StartMissionInput['actor']
     | SyncMissionSourceInput['actor']
+    | ProposePlanChangeInput['actor']
+    | ResolvePlanChangeInput['actor']
     | RetryMissionInput['actor']
     | ResumeMissionInput['actor']
     | StopMissionInput['actor'],
@@ -1166,4 +1381,154 @@ function buildPromptConfirmationApproval(
     ],
     createdAt: at,
   };
+}
+
+function canProposePlanChange(mission: Mission): boolean {
+  return mission.status === 'running'
+    || mission.status === 'verifying'
+    || mission.status === 'repairing'
+    || mission.status === 'scope_change_pending';
+}
+
+function getProposedPlanChangeRequests(
+  repository: MissionRepository,
+  missionId: string,
+) {
+  return repository
+    .listPlanChangeRequests(missionId)
+    .filter((changeRequest) => changeRequest.status === 'proposed')
+    .sort((left, right) => left.createdAt - right.createdAt);
+}
+
+function resolvePendingPlanChangeRequest(
+  repository: MissionRepository,
+  missionId: string,
+  planChangeRequestId: string | null,
+) {
+  const proposed = getProposedPlanChangeRequests(repository, missionId);
+  if (proposed.length === 0) {
+    return null;
+  }
+  if (!planChangeRequestId) {
+    return proposed[proposed.length - 1] ?? null;
+  }
+  return proposed.find((changeRequest) => changeRequest.id === planChangeRequestId) ?? null;
+}
+
+function resolvePlanChangeProposal(
+  mission: Mission,
+  input: ProposePlanChangeInput,
+): {
+  rationale: string;
+  proposedExpectedOutput: string | null;
+  proposedAcceptanceCriteria: string[];
+  proposedPlan: string[];
+} {
+  return {
+    rationale: normalizeText(input.rationale) ?? 'Adjust the mission checklist before continuing.',
+    proposedExpectedOutput: normalizeText(input.proposedExpectedOutput) ?? mission.expectedOutput,
+    proposedAcceptanceCriteria: input.proposedAcceptanceCriteria === undefined || input.proposedAcceptanceCriteria === null
+      ? [...mission.acceptanceCriteria]
+      : normalizeStringList(input.proposedAcceptanceCriteria),
+    proposedPlan: input.proposedPlan === undefined || input.proposedPlan === null
+      ? [...mission.plan]
+      : normalizeStringList(input.proposedPlan),
+  };
+}
+
+function isEquivalentPlanChangeRequest(
+  changeRequest: MissionDetailView['planChangeRequests'][number],
+  proposed: ReturnType<typeof resolvePlanChangeProposal>,
+): boolean {
+  return changeRequest.rationale === proposed.rationale
+    && (normalizeText(changeRequest.proposedExpectedOutput) ?? null) === proposed.proposedExpectedOutput
+    && isSameStringList(changeRequest.proposedAcceptanceCriteria, proposed.proposedAcceptanceCriteria)
+    && isSameStringList(changeRequest.proposedPlan, proposed.proposedPlan);
+}
+
+function enterScopeChangePending(
+  mission: Mission,
+  options: {
+    at: number;
+    requestId: string;
+    rationale: string;
+  },
+): Mission {
+  const blocker = 'Resolve the proposed checklist scope change before continuing the mission.';
+  const pendingApproval = buildPlanChangeApproval(options.requestId, options.at);
+  if (mission.status === 'scope_change_pending') {
+    return {
+      ...mission,
+      pendingApproval,
+      statusReason: blocker,
+      lastError: blocker,
+      updatedAt: options.at,
+      workpad: {
+        ...mission.workpad,
+        summary: 'Mission paused pending scope change confirmation.',
+        latestBlocker: blocker,
+        latestVerifierSummary: options.rationale,
+        updatedAt: options.at,
+      },
+    };
+  }
+  return transitionMission(mission, 'scope_change_pending', {
+    at: options.at,
+    reason: blocker,
+    pendingApproval,
+    lastError: blocker,
+    workpad: {
+      ...mission.workpad,
+      summary: 'Mission paused pending scope change confirmation.',
+      latestBlocker: blocker,
+      latestVerifierSummary: options.rationale,
+      updatedAt: options.at,
+    },
+  });
+}
+
+function buildPlanChangeApproval(
+  requestId: string,
+  at: number,
+): MissionPendingApproval {
+  return {
+    requestId,
+    kind: 'workflow',
+    summary: 'Resolve the proposed checklist scope change before continuing autonomous execution.',
+    options: [
+      {
+        index: 1,
+        label: 'Approve scope change',
+        description: 'Apply the proposed checklist scope change and continue the mission.',
+      },
+      {
+        index: 2,
+        label: 'Keep current checklist',
+        description: 'Reject the proposed scope change and continue with the current checklist.',
+      },
+    ],
+    createdAt: at,
+  };
+}
+
+function normalizeStringList(values: readonly string[] | null | undefined): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  const normalized: string[] = [];
+  for (const value of values) {
+    const text = normalizeText(value);
+    if (!text) {
+      continue;
+    }
+    normalized.push(text);
+  }
+  return normalized;
+}
+
+function isSameStringList(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((value, index) => value === right[index]);
 }

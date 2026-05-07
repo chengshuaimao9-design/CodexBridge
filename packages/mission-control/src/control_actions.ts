@@ -14,7 +14,6 @@ const RESUMABLE_CONTROL_STATUS_SET = new Set<Mission['status']>([
 const RETRY_REUSE_CONTEXT_STATUS_SET = new Set<Mission['status']>([
   'waiting_user',
   'needs_human',
-  'scope_change_pending',
   'handoff',
   'blocked',
 ]);

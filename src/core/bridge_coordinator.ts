@@ -5834,7 +5834,7 @@ export class BridgeCoordinator {
       return this.handleAgentListCommand(event);
     }
     if (['confirm', 'c'].includes(subcommand)) {
-      return this.handleAgentConfirmCommand(event, normalizedArgs[1] ?? '');
+      return this.handleAgentConfirmCommand(event, normalizedArgs.slice(1).join(' '));
     }
     if (['edit'].includes(subcommand)) {
       return this.handleAgentEditCommand(event);
@@ -5896,7 +5896,7 @@ export class BridgeCoordinator {
     return this.renderAgentDraftResponse(event, draft);
   }
 
-  async handleAgentConfirmCommand(event, token = '') {
+  async handleAgentConfirmCommand(event, confirmSpec = '') {
     const activeResponse = await this.rejectIfActiveTurnForCommand(event, 'agent');
     if (activeResponse) {
       return activeResponse;
@@ -5904,7 +5904,8 @@ export class BridgeCoordinator {
     const scopeRef = toScopeRef(event);
     const operation = this.getPendingAgentOperation(scopeRef);
     if (!operation) {
-      const resolved = this.resolveAgentStartConfirmation(event, token);
+      const confirmDirective = parseAgentConfirmDirective(confirmSpec);
+      const resolved = this.resolveAgentStartConfirmation(event, confirmDirective.targetToken);
       if (resolved.status === 'none_pending') {
         return messageResponse([
           this.t('coordinator.agent.noStartConfirmation'),
@@ -5926,7 +5927,21 @@ export class BridgeCoordinator {
           this.t('coordinator.agent.notFound', { value: resolved.value || '?' }),
         ], this.buildScopedSessionMeta(event));
       }
-      return this.confirmAgentStartMission(event, resolved.job, resolved.index);
+      const detail = this.agentJobs.getMissionDetail(resolved.job.id);
+      if (
+        confirmDirective.decision === 'reject'
+        && detail?.mission.status !== 'scope_change_pending'
+      ) {
+        return messageResponse([
+          this.t('coordinator.agent.confirmRejectUnsupported'),
+        ], this.buildScopedSessionMeta(event));
+      }
+      return this.confirmAgentStartMission(
+        event,
+        resolved.job,
+        resolved.index,
+        confirmDirective.decision,
+      );
     }
     if (operation.kind !== 'draft') {
       return this.confirmAgentOperation(event, scopeRef, operation);
@@ -6148,6 +6163,9 @@ export class BridgeCoordinator {
     }
     if (isAgentMissionAwaitingStartStatus(detail.mission.status)) {
       lines.push(...this.buildAgentStartGateLines(detail, resolved.index ?? job.id));
+    }
+    if (detail.mission.status === 'scope_change_pending') {
+      lines.push(...this.buildAgentPlanChangeLines(detail, resolved.index ?? job.id));
     }
     if (loopSnapshot.nextStep) {
       lines.push(this.t('coordinator.agent.loopNextStep', {
@@ -6958,7 +6976,12 @@ export class BridgeCoordinator {
     };
   }
 
-  confirmAgentStartMission(event, job: AgentJob, index: number) {
+  confirmAgentStartMission(
+    event,
+    job: AgentJob,
+    index: number,
+    decision: 'approve' | 'reject' | null = null,
+  ) {
     const detail = this.agentJobs.getMissionDetail(job.id);
     if (!detail) {
       return messageResponse([
@@ -6976,6 +6999,14 @@ export class BridgeCoordinator {
       updated = this.agentJobs.startJob(job.id, {
         confirmPrompt: true,
       });
+    } else if (detail.mission.status === 'scope_change_pending') {
+      updated = this.agentJobs.resolvePlanChange(job.id, decision === 'reject' ? 'reject' : 'approve');
+      return this.renderAgentMissionPlanChangeResponse(
+        event,
+        updated,
+        index,
+        decision === 'reject' ? 'reject' : 'approve',
+      );
     } else if (isAgentMissionPausedStatus(detail.mission.status)) {
       updated = this.agentJobs.resumeJob(job.id);
       return this.renderAgentMissionResumeResponse(event, updated, index);
@@ -7053,6 +7084,45 @@ export class BridgeCoordinator {
     return response;
   }
 
+  renderAgentMissionPlanChangeResponse(event, job: AgentJob, index: number, decision: 'approve' | 'reject') {
+    const detail = this.agentJobs.getMissionDetail(job.id);
+    if (!detail) {
+      return messageResponse([
+        this.t('coordinator.agent.notFound', { value: String(index) }),
+      ], this.buildScopedSessionMeta(event));
+    }
+    if (detail.mission.status !== 'queued') {
+      return messageResponse([
+        decision === 'reject'
+          ? this.t('coordinator.agent.planChangeRejectedPending')
+          : this.t('coordinator.agent.planChangeApprovedPending'),
+        this.t('coordinator.agent.title', { value: detail.mission.title }),
+        this.t('coordinator.agent.status', {
+          value: formatAgentStatusLabel(detail.mission.status, false, this.currentI18n),
+        }),
+        ...this.buildAgentPlanChangeLines(detail, index),
+        this.t('coordinator.agent.showHint', { index }),
+      ], this.buildScopedSessionMeta(event));
+    }
+    const response = messageResponse([
+      decision === 'reject'
+        ? this.t('coordinator.agent.planChangeRejectedQueued')
+        : this.t('coordinator.agent.planChangeApprovedQueued'),
+      this.t('coordinator.agent.title', { value: detail.mission.title }),
+      this.t('coordinator.agent.status', {
+        value: formatAgentStatusLabel(detail.mission.status, false, this.currentI18n),
+      }),
+      this.t('coordinator.agent.showHint', { index }),
+    ], this.buildScopedSessionMeta(event));
+    response.meta = {
+      ...(response.meta ?? {}),
+      systemAction: {
+        kind: 'run_agent_sweep',
+      },
+    };
+    return response;
+  }
+
   buildAgentStartGateLines(detail, index) {
     const commandToken = String(index ?? detail.mission.id);
     if (detail.mission.status === 'awaiting_checklist_confirm') {
@@ -7079,6 +7149,37 @@ export class BridgeCoordinator {
       ];
     }
     return [];
+  }
+
+  buildAgentPlanChangeLines(detail, index) {
+    const changeRequest = resolveLatestProposedPlanChange(detail);
+    if (!changeRequest) {
+      return [];
+    }
+    const commandToken = String(index ?? detail.mission.id);
+    const lines = [
+      this.t('coordinator.agent.planChangeTitle'),
+      this.t('coordinator.agent.planChangeRationale', {
+        value: changeRequest.rationale,
+      }),
+    ];
+    const proposedExpectedOutput = compactWhitespace(changeRequest.proposedExpectedOutput ?? '');
+    if (proposedExpectedOutput && proposedExpectedOutput !== detail.mission.expectedOutput) {
+      lines.push(this.t('coordinator.agent.planChangeExpectedOutput', {
+        value: proposedExpectedOutput,
+      }));
+    }
+    if (!isSameStringList(changeRequest.proposedAcceptanceCriteria, detail.mission.acceptanceCriteria)) {
+      lines.push(this.t('coordinator.agent.planChangeAcceptanceTitle'));
+      lines.push(...changeRequest.proposedAcceptanceCriteria.map((criterion, criterionIndex) => `${criterionIndex + 1}. ${criterion}`));
+    }
+    if (!isSameStringList(changeRequest.proposedPlan, detail.mission.plan)) {
+      lines.push(this.t('coordinator.agent.planChangePlanTitle'));
+      lines.push(...changeRequest.proposedPlan.map((line, planIndex) => `${planIndex + 1}. ${line}`));
+    }
+    lines.push(this.t('coordinator.agent.planChangeApproveHint', { index: commandToken }));
+    lines.push(this.t('coordinator.agent.planChangeRejectHint', { index: commandToken }));
+    return lines;
   }
 
   buildAgentPausedStateLines(detail, index) {
@@ -13639,6 +13740,10 @@ function isAgentMissionAwaitingStartStatus(status: string): boolean {
     || status === 'awaiting_prompt_confirm';
 }
 
+function isAgentMissionScopeChangePendingStatus(status: string): boolean {
+  return status === 'scope_change_pending';
+}
+
 function isAgentMissionPausedStatus(status: string): boolean {
   return status === 'waiting_user'
     || status === 'needs_human'
@@ -13647,7 +13752,72 @@ function isAgentMissionPausedStatus(status: string): boolean {
 }
 
 function isAgentMissionConfirmableStatus(status: string): boolean {
-  return isAgentMissionAwaitingStartStatus(status) || isAgentMissionPausedStatus(status);
+  return isAgentMissionAwaitingStartStatus(status)
+    || isAgentMissionScopeChangePendingStatus(status)
+    || isAgentMissionPausedStatus(status);
+}
+
+function parseAgentConfirmDirective(value: string): {
+  targetToken: string;
+  decision: 'approve' | 'reject' | null;
+} {
+  const parts = String(value ?? '').trim().split(/\s+/u).filter(Boolean);
+  if (parts.length === 0) {
+    return {
+      targetToken: '',
+      decision: null,
+    };
+  }
+  const last = parts[parts.length - 1]?.toLowerCase() ?? '';
+  if (isAgentRejectDecisionToken(last)) {
+    parts.pop();
+    return {
+      targetToken: parts.join(' ').trim(),
+      decision: 'reject',
+    };
+  }
+  if (isAgentApproveDecisionToken(last)) {
+    parts.pop();
+    return {
+      targetToken: parts.join(' ').trim(),
+      decision: 'approve',
+    };
+  }
+  return {
+    targetToken: parts.join(' ').trim(),
+    decision: null,
+  };
+}
+
+function isAgentApproveDecisionToken(value: string): boolean {
+  return value === 'approve' || value === 'approved' || value === 'accept' || value === '确认';
+}
+
+function isAgentRejectDecisionToken(value: string): boolean {
+  return value === 'reject'
+    || value === 'rejected'
+    || value === 'decline'
+    || value === 'deny'
+    || value === '拒绝'
+    || value === '驳回'
+    || value === '不同意';
+}
+
+function resolveLatestProposedPlanChange(detail) {
+  if (!Array.isArray(detail?.planChangeRequests)) {
+    return null;
+  }
+  const proposed = detail.planChangeRequests
+    .filter((changeRequest) => changeRequest?.status === 'proposed')
+    .sort((left, right) => left.createdAt - right.createdAt);
+  return proposed[proposed.length - 1] ?? null;
+}
+
+function isSameStringList(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((value, index) => value === right[index]);
 }
 
 function formatAgentStatusLabel(status: string, running: boolean, i18n: Translator): string {

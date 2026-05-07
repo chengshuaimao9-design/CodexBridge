@@ -267,6 +267,23 @@ export interface SyncMissionSourceInput {
   actor?: MissionControlActor | null;
 }
 
+export interface ProposePlanChangeInput {
+  missionId: string;
+  rationale: string;
+  proposedExpectedOutput?: string | null;
+  proposedAcceptanceCriteria?: string[] | null;
+  proposedPlan?: string[] | null;
+  actor?: MissionControlActor | null;
+}
+
+export interface ResolvePlanChangeInput {
+  missionId: string;
+  planChangeRequestId?: string | null;
+  decision: 'approve' | 'reject';
+  reason?: string | null;
+  actor?: MissionControlActor | null;
+}
+
 export interface ResumeMissionInput {
   missionId: string;
   reason?: string | null;
@@ -310,6 +327,12 @@ export interface MissionControlCommands {
   ): MissionControlResponse<MissionDetailView>;
   syncMissionSource(
     request: MissionControlRequest<SyncMissionSourceInput>,
+  ): MissionControlResponse<MissionDetailView>;
+  proposePlanChange(
+    request: MissionControlRequest<ProposePlanChangeInput>,
+  ): MissionControlResponse<MissionDetailView>;
+  resolvePlanChange(
+    request: MissionControlRequest<ResolvePlanChangeInput>,
   ): MissionControlResponse<MissionDetailView>;
   retryMission(
     request: MissionControlRequest<RetryMissionInput>,

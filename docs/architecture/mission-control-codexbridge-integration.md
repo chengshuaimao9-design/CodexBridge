@@ -220,6 +220,17 @@ Main remaining integration gap:
   - CodexBridge `/agent show` now renders that package-owned loop-budget state
     directly, while `/agent retry` remains the host-controlled way to open a
     fresh generation after that terminal budget stop
+- Phase 9p now adds the first package-backed scope-change resolution flow on
+  top of those package-owned mission views:
+  - Mission Control exports `proposePlanChange` /
+    `resolvePlanChange` commands plus a concrete `scope_change_pending` status
+    and workflow pending-approval payload for unresolved checklist changes
+  - approved plan changes now append a new authoritative
+    `ChecklistSnapshot` version within the active mission generation, while
+    rejected changes preserve the current checklist and re-queue the mission
+  - CodexBridge `/agent show` now renders the latest proposed scope change
+    directly from package detail state, and `/agent confirm [reject]` resolves
+    that flow without bridge-local state mutation or shell-log inspection
 - `/agent` `list/show/stop/retry` now consume that package API through an
   authoritative mission repository plus `AgentJob` projection instead of
   rebuilding runtime truth directly from bridge compatibility fields
@@ -235,8 +246,8 @@ Main remaining integration gap:
   beyond the current manual create path, append-oriented pristine pre-attempt
   sync path, and first local todo adapter; continuing to shrink `AgentJob`
   compatibility caches; and finishing the first-host product flow around:
-  - host-side resolution for `PlanChangeRequest` plus richer paused-state
-    approval/input cases beyond the new simple resume flow
+  - richer paused-state approval/input cases beyond the current
+    `PlanChangeRequest` plus simple resume flow
   - checklist-backed loop continuation/resolution UX that does not depend on
     raw shell logs or external `loop.sh` as the primary operator surface
 

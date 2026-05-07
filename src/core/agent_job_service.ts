@@ -245,6 +245,31 @@ export class AgentJobService {
     return this.requireById(id);
   }
 
+  proposePlanChange(id: string, params: {
+    rationale: string;
+    proposedExpectedOutput?: string | null;
+    proposedAcceptanceCriteria?: string[] | null;
+    proposedPlan?: string[] | null;
+  }): AgentJob {
+    this.requireById(id);
+    this.ensureMissionRecord(id);
+    this.createMissionControlApi().commands.proposePlanChange({
+      meta: this.createMissionControlMeta(`agent-plan-change-propose:${id}`),
+      input: {
+        missionId: id,
+        rationale: params.rationale,
+        proposedExpectedOutput: params.proposedExpectedOutput ?? null,
+        proposedAcceptanceCriteria: params.proposedAcceptanceCriteria ?? null,
+        proposedPlan: params.proposedPlan ?? null,
+        actor: {
+          actorId: 'agent-job-service',
+          actorType: 'host',
+        },
+      },
+    });
+    return this.requireById(id);
+  }
+
   updateJob(id: string, updates: Partial<AgentJob>): AgentJob {
     const current = this.requireById(id);
     const next: AgentJob = {
@@ -294,6 +319,30 @@ export class AgentJobService {
       meta: this.createMissionControlMeta(`agent-resume:${id}`),
       input: {
         missionId: id,
+        reason,
+        actor: {
+          actorId: 'agent-job-service',
+          actorType: 'host',
+        },
+      },
+    });
+    return this.requireById(id);
+  }
+
+  resolvePlanChange(
+    id: string,
+    decision: 'approve' | 'reject',
+    reason = decision === 'reject'
+      ? 'Agent mission scope change rejected by the host.'
+      : 'Agent mission scope change approved by the host.',
+  ): AgentJob {
+    this.requireById(id);
+    this.ensureMissionRecord(id);
+    this.createMissionControlApi().commands.resolvePlanChange({
+      meta: this.createMissionControlMeta(`agent-plan-change-resolve:${id}`),
+      input: {
+        missionId: id,
+        decision,
         reason,
         actor: {
           actorId: 'agent-job-service',

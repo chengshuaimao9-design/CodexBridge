@@ -660,7 +660,17 @@ flattening that budget boundary into a generic failure, and CodexBridge
 `/agent show` now renders that terminal loop-budget state directly from the
 package-backed mission detail view.
 
-Phase 9o is the current validated baseline, but several behaviors above are
+Phase 9p landed: Mission Control now exposes package-owned
+`proposePlanChange` / `resolvePlanChange` commands together with the first
+authoritative `scope_change_pending` lifecycle. Approved scope changes append a
+new immutable checklist snapshot version inside the active mission generation,
+while rejected changes preserve the current checklist and re-queue the mission.
+CodexBridge `/agent show` now renders the latest proposed plan change directly
+from package detail state, and `/agent confirm [index] [reject]` can resolve
+that proposal without falling back to shell logs or bridge-local state
+mutation.
+
+Phase 9p is the current validated baseline, but several behaviors above are
 still transitional:
 
 - `AgentJob` still carries bridge-side compatibility state that should keep
@@ -672,10 +682,10 @@ still transitional:
   first assistant-record-backed `local-todo` adapter, but broader source
   sync/reconciliation still belongs to the unfinished backlog
 - package/runtime support for `PlanChangeRequest`, `waiting_user`, and
-  `needs_human` exists, and the first host now has a package-backed simple
-  paused-state continue path, but plan-change resolution plus richer paused
-  input/approval flows still need to be productized before Mission Control can
-  be treated as a complete looping experience
+  `needs_human` exists, and the first host now has package-backed
+  `PlanChangeRequest` resolution plus a simple paused-state continue path, but
+  richer paused input/approval flows still need to be productized before
+  Mission Control can be treated as a complete looping experience
 - the formal Mission Control spec now expects explicit
   `scope_change_pending` semantics plus package-owned approval / plan-change
   control surfaces, and `max_loops_reached` still needs broader convergence
@@ -837,6 +847,15 @@ continuation flow on top of those mission detail and loop snapshot views.
 missions through package-owned `resumeMission` instead of requiring `/agent
 retry` or shell-log inspection for simple continuation.
 
+Phase 9p landed: Mission Control now exposes package-owned
+`proposePlanChange` / `resolvePlanChange` commands and a real
+`scope_change_pending` mission status on top of those package-backed detail
+views. Approved scope changes append a new checklist snapshot version inside
+the active mission generation, rejected changes keep the current checklist,
+and CodexBridge `/agent show` plus `/agent confirm [reject]` now resolve those
+package-backed `PlanChangeRequest` flows without bridge-local state
+reconstruction.
+
 - [x] Add `WorkItemSourceAdapter` as the source abstraction
 - [x] Support manual host-created source-backed work items through the
   package-owned create command
@@ -849,7 +868,7 @@ retry` or shell-log inspection for simple continuation.
   explicit:
   - `awaiting_checklist_confirm`
   - `awaiting_prompt_confirm`
-- [ ] Reconcile the concrete package status machine with the formal spec around
+- [x] Reconcile the concrete package status machine with the formal spec around
   explicit:
   - `scope_change_pending`
 - [x] Reconcile the concrete package status machine with the formal spec around
@@ -860,6 +879,7 @@ retry` or shell-log inspection for simple continuation.
   - `startMission`
 - [ ] Add package-owned command coverage for:
   - approval resolution
+- [x] Add package-owned command coverage for:
   - plan-change resolution
 - [x] Add package-owned mission snapshot subscription/read surfaces that map
   cleanly onto the formal `streamMissionSnapshots` / loop-status model
@@ -878,8 +898,9 @@ retry` or shell-log inspection for simple continuation.
 - [x] Add first-host resume/continue flows for `waiting_user`,
   `needs_human`, `handoff`, and `blocked` missions without requiring raw
   shell/loop log inspection
-- [ ] Add first-host resolution flows for `PlanChangeRequest` and richer
-  paused-state approval/input cases that need more than a simple resume signal
+- [x] Add first-host resolution flows for `PlanChangeRequest`
+- [ ] Add first-host resolution flows for richer paused-state approval/input
+  cases that need more than a simple resume signal
 - [ ] Let the first host start and continue a checklist-backed looping mission
   without external `loop.sh` as the primary user-facing control surface
 - [ ] Support future issue/board integrations
@@ -910,7 +931,7 @@ Completion criteria:
 - [x] A first host can require explicit `immutablePrompt` plus initial
   checklist confirmation before the first autonomous cycle starts
 - [ ] A first host can inspect package-owned cycle/stage/completion snapshots
-  and resolve plan changes or richer paused states without reading shell logs
+  and resolve richer paused states without reading shell logs
 - [ ] A user can run a checklist-backed looping mission from the first host
   surface without external `loop.sh` as the primary UX
 

@@ -147,6 +147,16 @@ Main remaining integration gap:
   - `/agent result` now prefers authoritative mission `resultText` before
     falling back to session/thread recovery paths, so bridge read behavior
     keeps moving toward package-owned runtime truth
+- Phase 9i now hardens pristine source sync lineage on top of that source
+  foundation:
+  - package-owned `syncMissionSource` no longer destructively resets
+    authoritative mission history for pristine `draft`/`queued` missions
+  - repeated queued `/agent rename` or other pre-attempt source refreshes now
+    supersede prior `ChecklistSnapshot` versions and append
+    `mission.source_synced` audit events under the same mission/generation
+    identity
+  - the bridge therefore keeps package-owned source metadata refreshes without
+    rewriting away earlier authoritative source-sync history
 - `/agent` `list/show/stop/retry` now consume that package API through an
   authoritative mission repository plus `AgentJob` projection instead of
   rebuilding runtime truth directly from bridge compatibility fields
@@ -158,12 +168,12 @@ Main remaining integration gap:
   persists through the package-owned progress sink so mission workpad/timeline
   state can retain bridge-delivered progress without letting the host mutate
   lifecycle truth directly
-- the next hardening work is finishing source sync/reconciliation beyond the
-  current manual create path, pristine pre-attempt sync path, and first local
-  todo adapter; continuing to shrink `AgentJob` compatibility caches; and
-  proving that a later Telegram, CLI, or web host can consume those same
-  package-owned read/control contracts without re-implementing bridge-local
-  runtime logic
+- the next hardening work is wiring broader source sync/reconciliation triggers
+  beyond the current manual create path, append-oriented pristine pre-attempt
+  sync path, and first local todo adapter; continuing to shrink `AgentJob`
+  compatibility caches; and proving that a later Telegram, CLI, or web host
+  can consume those same package-owned read/control contracts without
+  re-implementing bridge-local runtime logic
 
 ## V0 Migration Baseline Sources
 

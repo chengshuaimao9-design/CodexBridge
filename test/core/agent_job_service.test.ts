@@ -94,16 +94,29 @@ test('AgentJobService keeps package-owned mission authority when AgentJob compat
   assert.equal(detail?.hostBindings.bridgeSessionId, bridgeSession.id);
 
   const renamed = service.renameJob(created.id, 'Renamed authority task');
+  const renamedAgain = service.renameJob(created.id, 'Renamed authority task v2');
   assert.equal(renamed.title, 'Renamed authority task');
-  assert.equal(service.getMissionDetail(created.id)?.mission.title, 'Renamed authority task');
-  assert.equal(missionRepository.getMissionById(created.id)?.title, 'Renamed authority task');
+  assert.equal(renamedAgain.title, 'Renamed authority task v2');
+  assert.equal(service.getMissionDetail(created.id)?.mission.title, 'Renamed authority task v2');
+  assert.equal(missionRepository.getMissionById(created.id)?.title, 'Renamed authority task v2');
   assert.equal(
     missionRepository.getWorkItemById(`${created.id}:work-item`)?.title,
-    'Renamed authority task',
+    'Renamed authority task v2',
   );
   assert.deepEqual(
     missionRepository.listEvents(created.id).map((event) => event.kind),
-    ['mission.created', 'mission.source_synced', 'mission.queued'],
+    ['mission.created', 'mission.queued', 'mission.source_synced', 'mission.source_synced'],
+  );
+  assert.deepEqual(
+    missionRepository.listChecklistSnapshots(created.id).map((snapshot) => ({
+      version: snapshot.version,
+      supersededAt: snapshot.supersededAt,
+    })),
+    [
+      { version: 1, supersededAt: now },
+      { version: 2, supersededAt: now },
+      { version: 3, supersededAt: null },
+    ],
   );
 });
 

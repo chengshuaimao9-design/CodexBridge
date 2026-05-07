@@ -604,7 +604,15 @@ loading `WORKFLOW.md` or reconstructing attempt/workpad state in the bridge,
 and `/agent result` now prefers authoritative mission `resultText` before
 falling back to thread/session recovery.
 
-Phase 9h is the current validated baseline, but several behaviors above are
+Phase 9i landed: pristine package-owned source sync now preserves
+append-oriented authoritative history for pre-attempt refreshes instead of
+rewriting it destructively. `syncMissionSource` now supersedes prior
+`ChecklistSnapshot` versions, keeps the active generation identity stable, and
+appends `mission.source_synced` audit events so repeated queued `/agent rename`
+or other pristine source refreshes retain replayable lineage inside Mission
+Control.
+
+Phase 9i is the current validated baseline, but several behaviors above are
 still transitional:
 
 - `AgentJob` still carries bridge-side compatibility state that should keep
@@ -612,10 +620,10 @@ still transitional:
 - artifact/result export delivery still keeps bridge-side compatibility
   fallbacks for older jobs and missing package-backed files
 - source-backed mission sync now reaches the initial manual create path, a
-  pristine pre-attempt refresh path, and a first assistant-record-backed
-  `local-todo` adapter, but broader source sync/reconciliation and proof that
-  a later non-CodexBridge host can consume the same package contract still
-  belong to the unfinished backlog
+  pristine pre-attempt refresh path with authoritative lineage retention, and a
+  first assistant-record-backed `local-todo` adapter, but broader source
+  sync/reconciliation and proof that a later non-CodexBridge host can consume
+  the same package contract still belong to the unfinished backlog
 
 ## Phase 7: Checklist-First Domain Hardening
 
@@ -753,6 +761,13 @@ without loading `WORKFLOW.md` or reconstructing attempt/checklist progress
 from bridge-local compatibility fields. CodexBridge `/agent show` now consumes
 those package views directly, and `/agent result` prefers authoritative mission
 `resultText` before bridge/session fallbacks.
+
+Phase 9i landed: package-owned pristine source sync now keeps append-oriented
+history instead of resetting authoritative records. Repeated pre-attempt source
+refreshes supersede older `ChecklistSnapshot` versions, preserve the active
+generation identity, and append `mission.source_synced` events so CodexBridge
+queued `/agent rename` no longer rewrites away prior source-sync audit
+history.
 
 - [x] Add `WorkItemSourceAdapter` as the source abstraction
 - [x] Support manual host-created source-backed work items through the

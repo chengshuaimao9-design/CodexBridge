@@ -1,4 +1,5 @@
 import {
+  createMissionChecklistSnapshot,
   createMissionGeneration,
   createMissionRetryAggregate,
   mapMissionStatusToGenerationStatus,
@@ -309,8 +310,17 @@ export class DirectMissionControlApi implements MissionControlApi {
       reason,
       now: at,
     });
+    const nextChecklistVersion = Math.max(
+      mission.currentChecklistSnapshotVersion,
+      existingChecklistSnapshot?.version ?? 0,
+    ) + 1;
     const syncedMission: Mission = {
       ...synced.mission,
+      workItemId: mission.workItemId,
+      activeGenerationId: mission.activeGenerationId,
+      activeGenerationIndex: mission.activeGenerationIndex,
+      generationCount: mission.generationCount,
+      currentChecklistSnapshotVersion: nextChecklistVersion,
       createdAt: mission.createdAt,
       updatedAt: at,
     };
@@ -319,35 +329,39 @@ export class DirectMissionControlApi implements MissionControlApi {
       createdAt: existingWorkItem?.createdAt ?? mission.createdAt,
       updatedAt: at,
     };
-    const syncedGeneration = {
-      ...synced.generation,
-      createdAt: existingGeneration?.createdAt ?? mission.createdAt,
-      updatedAt: at,
-      completedAt: null,
-      supersededAt: null,
-    };
-    const syncedChecklistSnapshot: ChecklistSnapshot = {
-      ...synced.checklistSnapshot,
-      createdAt: existingChecklistSnapshot?.createdAt ?? at,
-      updatedAt: at,
-    };
+    const syncedChecklistSnapshot = createMissionChecklistSnapshot(syncedMission, {
+      at,
+      version: nextChecklistVersion,
+      generationId: mission.activeGenerationId,
+      sourceRevision: nextSourceSummary.sourceRevision,
+    });
+    syncedMission.currentChecklistSnapshotId = syncedChecklistSnapshot.id;
+    const syncedGeneration = existingGeneration
+      ? {
+        ...existingGeneration,
+        checklistSnapshotId: syncedChecklistSnapshot.id,
+        updatedAt: at,
+      }
+      : createMissionGeneration(syncedMission, {
+        at,
+        id: mission.activeGenerationId,
+        index: mission.activeGenerationIndex,
+        trigger: mission.activeGenerationIndex === 1 ? 'initial' : 'retry',
+        checklistSnapshotId: syncedChecklistSnapshot.id,
+        status: mapMissionStatusToGenerationStatus(mission.status),
+      });
 
-    this.repository.resetMission(syncedMission);
+    this.repository.saveMission(syncedMission);
     this.repository.saveWorkItem(syncedWorkItem);
     this.repository.saveGeneration(syncedGeneration);
+    if (existingChecklistSnapshot && existingChecklistSnapshot.id !== syncedChecklistSnapshot.id) {
+      this.repository.saveChecklistSnapshot({
+        ...existingChecklistSnapshot,
+        supersededAt: at,
+        updatedAt: at,
+      });
+    }
     this.repository.saveChecklistSnapshot(syncedChecklistSnapshot);
-    this.repository.appendEvent(this.createMissionEvent({
-      mission: syncedMission,
-      attemptId: null,
-      kind: 'mission.created',
-      summary: 'Mission created from a source-backed work item.',
-      metadata: {
-        source: syncedMission.source,
-        sourceRef: syncedMission.sourceRef,
-        sourceRevision: nextSourceSummary.sourceRevision,
-        ...buildActorMetadata(request.input.actor),
-      },
-    }));
     this.repository.appendEvent(this.createMissionEvent({
       mission: syncedMission,
       attemptId: null,
@@ -361,15 +375,6 @@ export class DirectMissionControlApi implements MissionControlApi {
         ...buildActorMetadata(request.input.actor),
       },
     }));
-    if (syncedMission.status === 'queued') {
-      this.repository.appendEvent(this.createMissionEvent({
-        mission: syncedMission,
-        attemptId: null,
-        kind: 'mission.queued',
-        summary: reason,
-        metadata: buildActorMetadata(request.input.actor),
-      }));
-    }
     return withMeta(request.meta, this.buildMissionDetailView(syncedMission));
   }
 

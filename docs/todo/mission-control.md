@@ -652,7 +652,15 @@ latest required user action plus an explicit `/agent confirm` continue hint for
 `resumeMission` instead of forcing users onto `/agent retry` or raw shell-log
 inspection for simple continuation.
 
-Phase 9n is the current validated baseline, but several behaviors above are
+Phase 9o landed: Mission Control now materializes `max_loops_reached` as an
+authoritative package status when `loopPolicy.maxCycles` is exhausted before
+another autonomous cycle can begin. The runtime appends a package-owned
+`mission.max_loops_reached` event plus loop-snapshot cycle result instead of
+flattening that budget boundary into a generic failure, and CodexBridge
+`/agent show` now renders that terminal loop-budget state directly from the
+package-backed mission detail view.
+
+Phase 9o is the current validated baseline, but several behaviors above are
 still transitional:
 
 - `AgentJob` still carries bridge-side compatibility state that should keep
@@ -669,11 +677,11 @@ still transitional:
   input/approval flows still need to be productized before Mission Control can
   be treated as a complete looping experience
 - the formal Mission Control spec now expects explicit
-  `awaiting_checklist_confirm`, `awaiting_prompt_confirm`,
-  `scope_change_pending`, and `max_loops_reached` lifecycle semantics plus
-  package-owned `startMission` / approval / plan-change / snapshot-stream
-  control surfaces, but the concrete package boundary has not fully converged
-  on that formal contract yet
+  `scope_change_pending` semantics plus package-owned approval / plan-change
+  control surfaces, and `max_loops_reached` still needs broader convergence
+  beyond the newly landed `loopPolicy.maxCycles` path (for example
+  `maxNoProgressCycles`), so the concrete package boundary has not fully
+  converged on that formal contract yet
 
 ## Phase 7: Checklist-First Domain Hardening
 
@@ -844,7 +852,10 @@ retry` or shell-log inspection for simple continuation.
 - [ ] Reconcile the concrete package status machine with the formal spec around
   explicit:
   - `scope_change_pending`
-  - `max_loops_reached`
+- [x] Reconcile the concrete package status machine with the formal spec around
+  explicit:
+  - `max_loops_reached` when `loopPolicy.maxCycles` is exhausted before the
+    next autonomous cycle starts
 - [x] Add package-owned command coverage for:
   - `startMission`
 - [ ] Add package-owned command coverage for:

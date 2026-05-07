@@ -302,10 +302,12 @@ export function mapMissionStatusToGenerationStatus(status: MissionStatus): Missi
     case 'completed':
       return 'completed';
     case 'failed':
+    case 'max_loops_reached':
       return 'failed';
     case 'stopped':
       return 'stopped';
     case 'blocked':
+    case 'scope_change_pending':
       return 'blocked';
     case 'waiting_user':
       return 'waiting_user';

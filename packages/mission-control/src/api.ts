@@ -460,6 +460,7 @@ export class DirectMissionControlApi implements MissionControlApi {
     if (
       mission.status === 'stopped'
       || mission.status === 'completed'
+      || mission.status === 'max_loops_reached'
       || mission.status === 'failed'
       || mission.status === 'archived'
     ) {
@@ -969,6 +970,7 @@ function shouldReplaceMissionOnCreate(
     && mission.status !== 'verifying'
     && mission.status !== 'repairing'
     && mission.status !== 'completed'
+    && mission.status !== 'max_loops_reached'
     && mission.status !== 'failed'
     && mission.status !== 'stopped'
     && mission.status !== 'archived';
@@ -1059,8 +1061,10 @@ function advanceMissionStartGate(
     || mission.status === 'repairing'
     || mission.status === 'waiting_user'
     || mission.status === 'needs_human'
+    || mission.status === 'scope_change_pending'
     || mission.status === 'handoff'
     || mission.status === 'blocked'
+    || mission.status === 'max_loops_reached'
     || mission.status === 'completed'
     || mission.status === 'failed'
     || mission.status === 'stopped'

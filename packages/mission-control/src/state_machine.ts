@@ -20,15 +20,17 @@ export const MISSION_STATUS_TRANSITIONS: Readonly<Record<MissionStatus, readonly
   draft: ['awaiting_checklist_confirm', 'awaiting_prompt_confirm', 'queued', 'stopped', 'archived'],
   awaiting_checklist_confirm: ['awaiting_prompt_confirm', 'queued', 'stopped', 'archived'],
   awaiting_prompt_confirm: ['queued', 'stopped', 'archived'],
-  queued: ['planning', 'running', 'stopped', 'archived'],
-  planning: ['queued', 'running', 'blocked', 'failed', 'stopped'],
-  running: ['verifying', 'repairing', 'waiting_user', 'needs_human', 'handoff', 'blocked', 'failed', 'stopped'],
-  verifying: ['queued', 'repairing', 'completed', 'failed', 'waiting_user', 'needs_human', 'handoff', 'blocked', 'stopped'],
-  repairing: ['queued', 'running', 'waiting_user', 'needs_human', 'handoff', 'blocked', 'failed', 'stopped'],
+  queued: ['planning', 'running', 'max_loops_reached', 'stopped', 'archived'],
+  planning: ['queued', 'running', 'blocked', 'failed', 'max_loops_reached', 'stopped'],
+  running: ['verifying', 'repairing', 'waiting_user', 'needs_human', 'scope_change_pending', 'handoff', 'blocked', 'failed', 'max_loops_reached', 'stopped'],
+  verifying: ['queued', 'repairing', 'completed', 'failed', 'waiting_user', 'needs_human', 'scope_change_pending', 'handoff', 'blocked', 'max_loops_reached', 'stopped'],
+  repairing: ['queued', 'running', 'waiting_user', 'needs_human', 'scope_change_pending', 'handoff', 'blocked', 'failed', 'max_loops_reached', 'stopped'],
   waiting_user: ['queued', 'running', 'stopped', 'archived'],
   needs_human: ['queued', 'running', 'stopped', 'archived'],
+  scope_change_pending: ['queued', 'running', 'stopped', 'archived'],
   handoff: ['queued', 'running', 'archived', 'stopped'],
   blocked: ['queued', 'running', 'needs_human', 'waiting_user', 'failed', 'stopped', 'archived'],
+  max_loops_reached: ['queued', 'archived'],
   completed: ['archived'],
   failed: ['queued', 'archived'],
   stopped: ['queued', 'archived'],
@@ -200,6 +202,11 @@ export function transitionMission(
   }
   if (nextStatus === 'failed') {
     next.stopRequest = null;
+  }
+  if (nextStatus === 'max_loops_reached') {
+    next.stopRequest = null;
+    next.pendingApproval = null;
+    next.lease = null;
   }
   if (nextStatus === 'running') {
     next.lastRunAt = at;

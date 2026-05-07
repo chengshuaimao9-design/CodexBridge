@@ -832,8 +832,10 @@ function mapMissionStatusToAgentJobStatus(status: MissionStatus): AgentJobStatus
     case 'repairing':
     case 'waiting_user':
     case 'needs_human':
+    case 'scope_change_pending':
     case 'handoff':
     case 'blocked':
+    case 'max_loops_reached':
     case 'completed':
     case 'failed':
     case 'stopped':
@@ -1067,8 +1069,10 @@ const ACTIVE_MISSION_JOB_STATUS_SET = new Set<MissionStatus>([
 const TERMINAL_MISSION_JOB_STATUS_SET = new Set<MissionStatus>([
   'waiting_user',
   'needs_human',
+  'scope_change_pending',
   'handoff',
   'blocked',
+  'max_loops_reached',
   'completed',
   'failed',
   'stopped',

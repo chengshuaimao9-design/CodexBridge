@@ -209,6 +209,17 @@ Main remaining integration gap:
     `resumeMission`, preserving the active mission generation instead of
     forcing users onto `/agent retry` or raw shell-log inspection for simple
     continuation
+- Phase 9o now adds the first explicit loop-budget terminal state on top of
+  those package-backed runtime views:
+  - Mission Control runtime now materializes `max_loops_reached` plus
+    `mission.max_loops_reached` timeline events when `loopPolicy.maxCycles`
+    would be exceeded before another autonomous cycle starts
+  - package-backed loop snapshots therefore preserve loop-budget exhaustion as
+    authoritative mission truth instead of collapsing it into bridge-local
+    generic failure text
+  - CodexBridge `/agent show` now renders that package-owned loop-budget state
+    directly, while `/agent retry` remains the host-controlled way to open a
+    fresh generation after that terminal budget stop
 - `/agent` `list/show/stop/retry` now consume that package API through an
   authoritative mission repository plus `AgentJob` projection instead of
   rebuilding runtime truth directly from bridge compatibility fields

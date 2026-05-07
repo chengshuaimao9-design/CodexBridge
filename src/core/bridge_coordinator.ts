@@ -14984,8 +14984,10 @@ function formatMissionRuntimeStatusLabel(status: string, i18n: Translator): stri
     case 'repairing':
     case 'waiting_user':
     case 'needs_human':
+    case 'scope_change_pending':
     case 'handoff':
     case 'blocked':
+    case 'max_loops_reached':
     case 'completed':
     case 'failed':
     case 'stopped':

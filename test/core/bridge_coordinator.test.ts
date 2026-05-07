@@ -8047,12 +8047,73 @@ test('/agent list, show, result, stop, and retry prefer Mission Control runtime 
     assert.equal((resumedJob?.missionRuntimeState?.mission as Record<string, unknown> | null)?.activeGenerationIndex, 1);
     assert.equal(resumedJob?.missionRuntimeState?.attempts.length ?? -1, 1);
 
+    const maxLoopsState = structuredClone(completedState);
+    (maxLoopsState.mission as Record<string, unknown>).status = 'max_loops_reached';
+    (maxLoopsState.mission as Record<string, unknown>).completedAt = null;
+    (maxLoopsState.mission as Record<string, unknown>).statusReason = 'Mission loop budget exhausted: max cycles reached (1/1).';
+    (maxLoopsState.mission as Record<string, unknown>).lastError = 'Mission loop budget exhausted: max cycles reached (1/1).';
+    (maxLoopsState.mission as Record<string, unknown>).workpad = {
+      ...(maxLoopsState.mission as any).workpad,
+      latestBlocker: 'Mission loop budget exhausted: max cycles reached (1/1).',
+      latestVerifierSummary: 'Mission loop budget exhausted: max cycles reached (1/1).',
+      updatedAt: missionUpdatedAt + 2,
+    };
+    (maxLoopsState.mission as Record<string, unknown>).updatedAt = missionUpdatedAt + 2;
+    (maxLoopsState as Record<string, unknown>).events = [{
+      id: `${job.id}-max-loops-event-1`,
+      missionId: job.id,
+      attemptId,
+      generationId: (maxLoopsState.mission as any).activeGenerationId,
+      generationIndex: 1,
+      kind: 'mission.max_loops_reached',
+      summary: 'Mission loop budget exhausted: max cycles reached (1/1).',
+      detail: null,
+      metadata: {
+        cycleResult: createMissionCycleResult({
+          mission: maxLoopsState.mission as any,
+          attempt: maxLoopsState.attempts[0] as any,
+          checklistSnapshot: createMissionChecklistSnapshot(maxLoopsState.mission as any, {
+            at: missionUpdatedAt + 2,
+          }),
+          cycle: 3,
+          status: 'failed',
+          stage: 'runtime.max_cycles',
+          progress: 'Mission loop budget exhausted: max cycles reached (1/1).',
+          nextStep: 'Retry the mission to open a new generation with a fresh cycle budget.',
+          verifierSummary: 'Mission loop budget exhausted: max cycles reached (1/1).',
+          blocker: 'Mission loop budget exhausted: max cycles reached (1/1).',
+          eventSeq: 2,
+          updatedAt: missionUpdatedAt + 2,
+        }),
+      },
+      createdAt: missionUpdatedAt + 2,
+    }];
+    runtime.services.agentJobs.getMissionRepository().saveMission(maxLoopsState.mission as any);
+    runtime.services.agentJobs.getMissionRepository().appendEvent((maxLoopsState.events as any[])[0] as any);
+    runtime.services.agentJobs.updateJob(job.id, {
+      status: 'completed',
+      running: false,
+      stopRequested: false,
+      missionRuntimeState: maxLoopsState,
+    });
+
+    const showMaxLoops = await runtime.services.bridgeCoordinator.handleInboundEvent({
+      platform: 'weixin',
+      externalScopeId: 'wx-agent-mission-state-1',
+      text: '/agent show 1',
+    });
+    const showMaxLoopsText = showMaxLoops.messages.map((message) => message.text).join('\n');
+    assert.match(showMaxLoopsText, /状态：已达到循环上限/);
+    assert.match(showMaxLoopsText, /当前阶段：runtime\.max_cycles/);
+    assert.match(showMaxLoopsText, /下一步：Retry the mission to open a new generation with a fresh cycle budget\./);
+
     runtime.services.agentJobs.updateJob(job.id, {
       status: 'completed',
       running: false,
       stopRequested: false,
       missionRuntimeState: structuredClone(waitingUserState),
     });
+    runtime.services.agentJobs.getMissionRepository().saveMission(waitingUserState.mission as any);
 
     const stopped = await runtime.services.bridgeCoordinator.handleInboundEvent({
       platform: 'weixin',

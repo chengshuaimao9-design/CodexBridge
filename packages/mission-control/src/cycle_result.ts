@@ -119,6 +119,7 @@ export function mapMissionStatusToMissionControlOutcome(
     case 'blocked':
       return 'blocked';
     case 'failed':
+    case 'max_loops_reached':
       return 'failed';
     case 'stopped':
       return 'stopped';

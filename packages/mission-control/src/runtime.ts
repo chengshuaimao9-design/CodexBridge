@@ -217,6 +217,15 @@ export class MissionRuntime {
           });
         }
         mission = loopStop.mission;
+        const maxLoopsReached = this.materializeMaxLoopsReached(mission);
+        if (maxLoopsReached) {
+          return this.finalizeRun(maxLoopsReached, options.ownerId, initialEventCount, {
+            attempt: lastAttempt,
+            workflow,
+            providerResult: lastProviderResult,
+            verifierResult: lastVerifierResult,
+          });
+        }
         if (mission.status === 'verifying') {
           const verifyingAttempt = this.requireActiveAttempt(mission);
           lastAttempt = verifyingAttempt;
@@ -1275,6 +1284,66 @@ export class MissionRuntime {
     return this.requireAttempt(mission.activeAttemptId);
   }
 
+  private materializeMaxLoopsReached(mission: Mission): Mission | null {
+    const maxCycles = mission.loopPolicy.maxCycles;
+    if (
+      maxCycles === null
+      || mission.attemptCount < maxCycles
+      || (mission.status !== 'queued' && mission.status !== 'planning' && mission.status !== 'repairing')
+    ) {
+      return null;
+    }
+    const at = this.now();
+    const summary = `Mission loop budget exhausted: max cycles reached (${mission.attemptCount}/${maxCycles}).`;
+    const latestAttempt = mission.activeAttemptId
+      ? this.repository.getAttemptById(mission.activeAttemptId)
+      : this.repository
+        .listAttempts(mission.id)
+        .sort((left, right) => {
+          const leftGeneration = left.generationIndex ?? 0;
+          const rightGeneration = right.generationIndex ?? 0;
+          if (leftGeneration !== rightGeneration) {
+            return rightGeneration - leftGeneration;
+          }
+          if (left.index !== right.index) {
+            return right.index - left.index;
+          }
+          return right.updatedAt - left.updatedAt;
+        })[0] ?? null;
+    const halted = transitionMission(mission, 'max_loops_reached', {
+      at,
+      reason: summary,
+      lastError: summary,
+      workpad: {
+        ...mission.workpad,
+        latestBlocker: summary,
+        latestVerifierSummary: summary,
+        updatedAt: at,
+      },
+    });
+    const savedMission = this.saveMission(halted);
+    const cycleResult = this.buildMissionCycleResult({
+      mission: savedMission,
+      attempt: latestAttempt,
+      status: 'failed',
+      stage: 'runtime.max_cycles',
+      progress: summary,
+      nextStep: 'Retry the mission to open a new generation with a fresh cycle budget.',
+      verifierSummary: summary,
+      blocker: summary,
+      evidence: {
+        maxCycles,
+        attemptCount: mission.attemptCount,
+      },
+    });
+    this.appendMissionEvent(savedMission, 'mission.max_loops_reached', summary, latestAttempt, {
+      maxCycles,
+      attemptCount: mission.attemptCount,
+      cycleResult,
+    });
+    return savedMission;
+  }
+
   private saveMission(mission: Mission): Mission {
     const normalizedMission = normalizeMissionRecord(mission);
     const persistedMission = this.repository.getMissionById(normalizedMission.id);
@@ -1508,10 +1577,14 @@ function mapMissionTerminalStatusToEventKind(status: Mission['status']): Mission
       return 'mission.waiting_user';
     case 'needs_human':
       return 'mission.needs_human';
+    case 'scope_change_pending':
+      return 'mission.scope_change_pending';
     case 'handoff':
       return 'mission.handoff';
     case 'blocked':
       return 'mission.blocked';
+    case 'max_loops_reached':
+      return 'mission.max_loops_reached';
     case 'completed':
       return 'mission.completed';
     case 'failed':

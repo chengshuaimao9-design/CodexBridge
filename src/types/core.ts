@@ -190,8 +190,10 @@ export type AgentJobStatus =
   | 'repairing'
   | 'waiting_user'
   | 'needs_human'
+  | 'scope_change_pending'
   | 'handoff'
   | 'blocked'
+  | 'max_loops_reached'
   | 'completed'
   | 'failed'
   | 'stopped';

@@ -722,3 +722,119 @@ continuation: allow
     ['mission.stopped'],
   );
 });
+
+test('mission runtime materializes max_loops_reached before opening another cycle beyond loopPolicy.maxCycles', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'mission-control-runtime-max-cycles-cwd-'));
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mission-control-runtime-max-cycles-state-'));
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mission-control-runtime-max-cycles-root-'));
+  writeWorkflow(cwd, `
+version: 1
+maxTurns: 4
+maxAttempts: 4
+continuation: allow
+`);
+  const repo = new JsonFileMissionRepository(stateDir);
+  const nowRef = { value: 1_700_830_200_000 };
+  const prompts: string[] = [];
+
+  const provider: MissionProvider = {
+    kind: 'fake-provider',
+    async start(input) {
+      prompts.push(input.promptText);
+      return {
+        providerRunId: `run-max-cycles-${prompts.length}`,
+        providerThreadId: 'thread-max-cycles',
+      };
+    },
+    async continue() {
+      throw new Error('continue should not be called in max-cycles test');
+    },
+    async wait(runId) {
+      nowRef.value += 100;
+      return {
+        outcome: 'completed',
+        text: `Completed ${runId}.`,
+        artifacts: [],
+        previewText: `Completed ${runId}.`,
+        errorMessage: null,
+        requiresHuman: false,
+        handoffState: null,
+        continuationEligible: true,
+        stopReason: null,
+        rawState: 'complete',
+      };
+    },
+    async interrupt() {},
+  };
+
+  let verifierCalls = 0;
+  const verifier: MissionVerifier = {
+    async verify(input) {
+      verifierCalls += 1;
+      nowRef.value += 20;
+      assert.equal(input.activeChecklistItem?.title, 'Patch exists');
+      return createMissionVerifierResult({
+        verdict: 'complete',
+        summary: 'Patch exists and is verified; continue to the remaining checklist item.',
+      });
+    },
+  };
+
+  const mission = transitionMission(createMission({
+    id: 'mission-runtime-max-cycles',
+    source: 'weixin',
+    platform: 'weixin',
+    externalScopeId: 'mission-runtime-max-cycles-scope',
+    title: 'Mission runtime max cycles',
+    goal: 'Stop once the configured cycle budget is exhausted.',
+    expectedOutput: 'A verified mission result.',
+    acceptanceCriteria: ['Patch exists', 'Tests prove the fix'],
+    providerProfileId: 'codex-default',
+    cwd,
+    loopPolicy: {
+      maxAttempts: 4,
+      maxTurns: 4,
+      maxCycles: 1,
+      maxNoProgressCycles: null,
+    },
+    now: nowRef.value,
+  }), 'queued', {
+    at: nowRef.value + 10,
+  });
+  repo.saveMission(mission);
+
+  const runtime = createRuntimeHarness({
+    repository: repo,
+    provider,
+    verifier,
+    rootDir,
+    nowRef,
+    ids: [
+      'attempt-runtime-max-cycles-1',
+      'event-runtime-max-cycles-1',
+      'event-runtime-max-cycles-2',
+      'event-runtime-max-cycles-3',
+      'event-runtime-max-cycles-4',
+      'event-runtime-max-cycles-5',
+      'event-runtime-max-cycles-6',
+    ],
+  });
+  const result = await runtime.runMission(mission.id, {
+    ownerId: 'worker-runtime-max-cycles',
+    readOnly: true,
+    allowSharedCwd: true,
+  });
+
+  assert.equal(prompts.length, 1);
+  assert.equal(verifierCalls, 1);
+  assert.equal(result.mission.status, 'max_loops_reached');
+  assert.match(result.mission.statusReason ?? '', /max cycles reached/i);
+  assert.equal(result.mission.attemptCount, 1);
+  assert.equal(result.latestCycleResult?.stage, 'runtime.max_cycles');
+  assert.equal(result.latestCycleResult?.status, 'failed');
+  assert.equal(result.latestCycleResult?.nextStep, 'Retry the mission to open a new generation with a fresh cycle budget.');
+
+  const eventKinds = repo.listEvents(mission.id).map((event) => event.kind);
+  assert.ok(eventKinds.includes('mission.progress'));
+  assert.ok(eventKinds.includes('mission.max_loops_reached'));
+});

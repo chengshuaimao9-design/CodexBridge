@@ -40,6 +40,7 @@ const ACTIVE_MISSION_JOB_STATUS_SET = new Set<MissionStatus>([
   'repairing',
 ]);
 const TERMINAL_MISSION_JOB_STATUS_SET = new Set<MissionStatus>([
+  'max_loops_reached',
   'completed',
   'failed',
   'stopped',
@@ -619,7 +620,13 @@ function mapPlatformToMissionSource(platform: string): Mission['source'] {
 }
 
 function mapAgentStatusToMissionStatus(status: AgentJobStatus, running: boolean): MissionStatus {
-  if (running && status !== 'stopped' && status !== 'completed' && status !== 'failed') {
+  if (
+    running
+    && status !== 'stopped'
+    && status !== 'completed'
+    && status !== 'failed'
+    && status !== 'max_loops_reached'
+  ) {
     return status === 'planning' ? 'planning' : 'running';
   }
   return status;
@@ -639,8 +646,10 @@ function mapMissionStatusToAgentJobStatus(status: MissionStatus): AgentJobStatus
     case 'repairing':
     case 'waiting_user':
     case 'needs_human':
+    case 'scope_change_pending':
     case 'handoff':
     case 'blocked':
+    case 'max_loops_reached':
     case 'completed':
     case 'failed':
     case 'stopped':
@@ -734,6 +743,10 @@ function mapAgentStatusToMissionAttemptStatus(status: AgentJobStatus): MissionAt
     case 'stopped':
     case 'queued':
       return status;
+    case 'scope_change_pending':
+      return 'blocked';
+    case 'max_loops_reached':
+      return 'failed';
     default:
       return 'queued';
   }

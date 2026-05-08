@@ -245,6 +245,68 @@ Important rule:
 - switching to another provider profile creates a new bridge session
 - the platform binding moves, but the provider boundary stays clean
 
+## Codex Native API Server
+
+CodexBridge should also be ready to expose the **logged-in local Codex
+app-server** as a localhost-callable API surface.
+
+This is a separate direction from `@codexbridge/codex-gateway`:
+
+- `codex-gateway` adapts outside providers for Codex
+- `codex-native-api` exposes Codex itself as an API
+
+The native API path exists for two reasons:
+
+1. convert local Codex subscription/login state into a callable localhost API
+2. provide an isolated side-task lane that does not pollute the main bridge
+   conversation thread
+
+The key rule is:
+
+- **main WeChat conversation flow stays on the current Codex app-server path**
+- **isolated side tasks may use the native API path**
+- **external provider APIs remain fallback/optional**
+
+Preferred routing/degradation order:
+
+1. localhost Codex Native API
+2. direct native isolated ephemeral-thread execution
+3. external provider fallback
+
+Recommended first surface:
+
+- `GET /v1/models`
+- `POST /v1/responses`
+- optional `POST /v1/responses/compact`
+
+Recommended first constraints:
+
+- bind `127.0.0.1` by default
+- reuse the already logged-in Codex runtime instead of requiring an OpenAI API
+  key
+- implement the first version as an internal CodexBridge runtime/module close
+  to the current native Codex integration, not as a separate package
+- preserve a clean extraction path so the capability can later become a
+  reusable package and, if justified, a standalone npm package outside the full
+  bridge UX
+- treat Chat Completions compatibility as a later compatibility layer, not a
+  Phase 1 requirement
+- maintain a mapping layer from `response_id` to the underlying
+  `codex_thread_id` / continuation state so API clients can remain logically
+  stateless while the native runtime stays thread-aware
+
+Reference directions for this workstream:
+
+- `Wei-Shaw/sub2api` for subscription-to-API product shape
+- `router-for-me/CLIProxyAPI` for compatibility facade and localhost adapter
+  design
+
+This workstream should be tracked separately under:
+
+- branch: `track/codex-native-api`
+- TODO: [`docs/todo/codex-native-api.md`](../todo/codex-native-api.md)
+- architecture: [`docs/architecture/codex-native-api.md`](./codex-native-api.md)
+
 ## Codex Gateway Package Architecture
 
 The Codex Gateway protocol layer should stay as an internal TypeScript package

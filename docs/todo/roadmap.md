@@ -15,8 +15,8 @@ target.
 
 ## Working Branch Model
 
-The repository should be developed through two long-lived workstream branches,
-not one short-lived branch per tiny feature:
+The repository should be developed through long-lived workstream branches, not
+one short-lived branch per tiny feature:
 
 ```text
 main
@@ -27,6 +27,9 @@ track/codex-gateway
 
 track/mission-control
   Mission Control orchestration workstream
+
+track/codex-native-api
+  Codex-native localhost API workstream
 ```
 
 Rules:
@@ -34,6 +37,8 @@ Rules:
 - `main` should stay mergeable and reasonably stable
 - `track/codex-gateway` should primarily own Codex Gateway protocol/package work
 - `track/mission-control` should primarily own Mission Control runtime/package work
+- `track/codex-native-api` should primarily own Codex-native API exposure, localhost facade design, and isolated side-task routing policy
+- `track/codex-native-api` should also preserve a clean extraction path toward a reusable package if the native-api boundary stabilizes
 - low-level checklist churn should stay out of this file
 - avoid frequent concurrent edits to shared files such as:
   - `docs/todo/roadmap.md`
@@ -46,16 +51,21 @@ Use these files for detailed implementation work:
 
 - [Codex Gateway TODO](./codex-gateway.md)
 - [Mission Control TODO](./mission-control.md)
+- [Codex Native API TODO](./codex-native-api.md)
 
 Architecture references:
 
 - [Core architecture](../architecture/codexbridge-core-architecture.md)
 - [Mission Control architecture](../architecture/mission-control.md)
+- [Codex Native API architecture](../architecture/codex-native-api.md)
 
 Reference sources currently tracked:
 
 - `reference/codex-gateway` for LiteLLM, codex-proxy, open-responses, and llm-rosetta
 - `reference/symphony` as the orchestration reference mirror when available
+- external upstream references:
+  - `Wei-Shaw/sub2api`
+  - `router-for-me/CLIProxyAPI`
 
 ## Current Snapshot
 
@@ -115,6 +125,17 @@ affect the product as a whole, not just one package.
 Detailed checklist:
 
 - [Codex Gateway TODO](./codex-gateway.md)
+
+### P2: Codex Native API summary
+
+- [ ] Expose the logged-in local Codex runtime as a localhost Responses-first API without changing the main WeChat chat flow
+- [ ] Route isolated side tasks to Codex Native API while keeping full conversation tasks on the current Codex app-server path
+- [ ] Keep external provider APIs as fallback/optional paths rather than the primary route for isolated subtasks
+- [ ] Keep the first implementation internal, but preserve a clean path toward later extraction as a reusable package and eventual standalone npm package if justified
+
+Detailed checklist:
+
+- [Codex Native API TODO](./codex-native-api.md)
 
 ### P2: Mission Control summary
 

@@ -82,8 +82,8 @@ export class AgentJobService {
     this.missionControlRepository = missionRepository
       ? new ProjectingMissionRepository(missionRepository, agentJobs)
       : new AgentJobMissionRepository({
-        listJobs: () => this.agentJobs.list(),
-        getJobById: (id) => this.agentJobs.getById(id),
+        listJobs: () => this.listAllJobs(),
+        getJobById: (id) => this.getById(id),
         updateJob: (id, updates) => this.updateJob(id, updates),
         resolveSession: (job) => this.getSession(job),
       }, {
@@ -92,8 +92,7 @@ export class AgentJobService {
   }
 
   listForScope(scopeRef: PlatformScopeRef): AgentJob[] {
-    return this.agentJobs
-      .list()
+    return this.listAllJobs()
       .filter((job) => job.platform === scopeRef.platform && job.externalScopeId === scopeRef.externalScopeId)
       .sort((left, right) => left.createdAt - right.createdAt);
   }
@@ -101,6 +100,7 @@ export class AgentJobService {
   listAllJobs(): AgentJob[] {
     return this.agentJobs
       .list()
+      .map((job) => normalizeLegacyAgentJob(job))
       .sort((left, right) => left.createdAt - right.createdAt);
   }
 
@@ -138,7 +138,7 @@ export class AgentJobService {
   }
 
   getById(id: string): AgentJob | null {
-    return this.agentJobs.getById(id);
+    return normalizeLegacyAgentJob(this.agentJobs.getById(id));
   }
 
   requireById(id: string): AgentJob {
@@ -442,7 +442,7 @@ export class AgentJobService {
   }
 
   recoverSupervisableMissions(): AgentJobMissionSupervisionRecoveryResult {
-    this.ensureMissionRecordsForJobs(this.agentJobs.list());
+    this.ensureMissionRecordsForJobs(this.listAllJobs());
     const supervisor = this.createMissionSupervisor();
     const now = this.now();
     return {
@@ -459,7 +459,7 @@ export class AgentJobService {
     this.recoverSupervisableMissions();
     return this.createMissionSupervisor()
       .listSupervisableMissionIds({ now: this.now() })
-      .map((missionId) => this.agentJobs.getById(missionId))
+      .map((missionId) => this.getById(missionId))
       .filter((job): job is AgentJob => Boolean(job) && job.platform === platform)
       .slice(0, limit)
       .map((job) => this.requireById(job.id));
@@ -467,7 +467,7 @@ export class AgentJobService {
 
   resetRunningJobs(): void {
     const now = this.now();
-    for (const job of this.agentJobs.list()) {
+    for (const job of this.listAllJobs()) {
       if (!job.running) {
         continue;
       }
@@ -494,6 +494,7 @@ export class AgentJobService {
     const now = this.now();
     const jobs = this.agentJobs
       .list()
+      .map((job) => normalizeLegacyAgentJob(job))
       .filter((job) => job.platform === platform && job.status === 'queued' && !job.running && !job.stopRequested)
       .sort((left, right) => left.createdAt - right.createdAt)
       .slice(0, limit);
@@ -646,7 +647,7 @@ export class AgentJobService {
   }
 
   ensureMissionRecord(id: string): Mission | null {
-    const job = this.agentJobs.getById(id);
+    const job = this.getById(id);
     if (!job) {
       return null;
     }
@@ -886,6 +887,24 @@ function hasLegacyMissionProjection(job: AgentJob): boolean {
     || Boolean(job.missionWorkpadLatestVerifierSummary)
     || Boolean(job.missionWorkpadFinalResultSummary)
     || job.status !== 'queued';
+}
+
+function normalizeLegacyAgentJob(job: AgentJob | null): AgentJob | null {
+  if (!job) {
+    return null;
+  }
+  return {
+    ...job,
+    resultText: normalizeNullableString(job.resultText),
+    resultArtifacts: normalizeResultArtifacts(job.resultArtifacts ?? null),
+    missionWorkflowPath: normalizeNullableString(job.missionWorkflowPath),
+    missionWorkflowSourceLabel: normalizeNullableString(job.missionWorkflowSourceLabel),
+    missionWorkpadLatestBlocker: normalizeNullableString(job.missionWorkpadLatestBlocker),
+    missionWorkpadLatestVerifierSummary: normalizeNullableString(job.missionWorkpadLatestVerifierSummary),
+    missionWorkpadFinalResultSummary: normalizeNullableString(job.missionWorkpadFinalResultSummary),
+    missionAttemptHistory: normalizeAttemptHistory(job.missionAttemptHistory ?? []),
+    missionRuntimeState: job.missionRuntimeState ?? null,
+  };
 }
 
 function normalizeArtifactKind(value: unknown): TurnArtifactDeliveredItem['kind'] | null {

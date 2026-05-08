@@ -13,7 +13,7 @@ import {
   serializeAgentJobMissionRuntimeState,
 } from '../../src/core/mission_control_agent_job_adapter.js';
 import { InMemoryAgentJobRepository } from '../../src/store/in_memory/in_memory_agent_job_repository.js';
-import type { BridgeSession } from '../../src/types/core.js';
+import type { AgentJob, BridgeSession } from '../../src/types/core.js';
 
 function makeAgentJobService(now: number, bridgeSession: BridgeSession) {
   return new AgentJobService({
@@ -118,6 +118,80 @@ test('AgentJobService keeps package-owned mission authority when AgentJob compat
       { version: 3, supersededAt: null },
     ],
   );
+});
+
+test('AgentJobService normalizes legacy AgentJob mission fields before recovery', () => {
+  const now = 1_701_099_992_000;
+  const bridgeSession: BridgeSession = {
+    id: 'session-agent-service-legacy',
+    providerProfileId: 'codex-default',
+    codexThreadId: 'thread-agent-service-legacy',
+    cwd: '/repo',
+    title: 'Mission session',
+    createdAt: now - 1_000,
+    updatedAt: now - 500,
+  };
+  const agentJobs = new InMemoryAgentJobRepository();
+  const missionRepository = new InMemoryMissionRepository();
+  const service = new AgentJobService({
+    agentJobs,
+    missionRepository,
+    bridgeSessions: {
+      getSessionById(bridgeSessionId: string) {
+        return bridgeSessionId === bridgeSession.id ? bridgeSession : null;
+      },
+    },
+    now: () => now,
+  });
+
+  const legacyJob = {
+    id: 'job-legacy-mission-fields',
+    platform: 'weixin',
+    externalScopeId: 'wxid_legacy_mission_fields',
+    title: 'Legacy mission record',
+    originalInput: '/agent continue legacy mission',
+    goal: 'Resume a legacy mission without mission compatibility fields.',
+    expectedOutput: 'A recovered mission summary.',
+    plan: ['Resume mission'],
+    category: 'code',
+    riskLevel: 'medium',
+    mode: 'codex',
+    providerProfileId: 'codex-default',
+    bridgeSessionId: bridgeSession.id,
+    cwd: '/repo',
+    locale: 'zh-CN',
+    status: 'completed',
+    running: false,
+    stopRequested: false,
+    maxAttempts: 2,
+    attemptCount: 1,
+    lastRunAt: now - 10_000,
+    completedAt: now - 9_000,
+    lastResultPreview: 'Recovered preview',
+    resultText: 'Recovered preview',
+    resultArtifacts: null,
+    lastError: null,
+    verificationSummary: 'Looks good',
+    createdAt: now - 20_000,
+    updatedAt: now - 9_000,
+  } as AgentJob;
+  agentJobs.save(legacyJob);
+
+  const loaded = service.requireById(legacyJob.id);
+  assert.deepEqual(loaded.missionAttemptHistory, []);
+  assert.equal(loaded.missionWorkflowPath, null);
+  assert.equal(loaded.missionRuntimeState, null);
+
+  const recovery = service.recoverSupervisableMissions();
+  assert.deepEqual(recovery, {
+    recoveredMissionIds: [],
+    stoppedMissionIds: [],
+  });
+
+  const detail = service.getMissionDetail(legacyJob.id);
+  assert.equal(detail?.mission.id, legacyJob.id);
+  assert.equal(detail?.mission.title, legacyJob.title);
+  assert.equal(detail?.hostBindings.bridgeSessionId, bridgeSession.id);
 });
 
 test('AgentJobService createJob seeds a manual source-backed mission while keeping host bindings separate', () => {

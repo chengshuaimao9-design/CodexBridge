@@ -73,6 +73,9 @@ Current internal shape:
 - `src/providers/codex/native_api_server.ts` is the first in-process localhost
   shell over that substrate; it resolves provider/runtime context per request
   so reconnect/account-switch changes do not require a server restart
+- `src/providers/codex/native_api_service.ts` owns standalone lifecycle,
+  provider-profile selection, and auth-path binding for long-running localhost
+  startup paths such as the native-api CLI service
 
 ### Stage B: Internal workspace package
 
@@ -308,7 +311,8 @@ Build:
 - localhost-only HTTP server
 - `GET /v1/models`
 - `POST /v1/responses`
-- optional `POST /v1/responses/compact`
+- keep `POST /v1/responses/compact` explicitly unsupported until later
+  compatibility/hardening work
 - minimal local secret/shared-key policy if needed
 
 First shell constraints:
@@ -319,6 +323,9 @@ First shell constraints:
 - reject `previous_response_id` until the continuation registry exists instead
   of inventing a fake continuation path early
 - allow streaming to remain explicitly unsupported until a later hardening pass
+- keep long-running localhost startup independently launchable from WeChat or
+  Telegram bridge runtime so the API shell can act as a standalone local
+  service before any package extraction
 
 Outcome:
 

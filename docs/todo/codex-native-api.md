@@ -193,6 +193,10 @@ Upstream:
     context per request instead of snapshotting one startup session, so
     reconnect and account-switch changes become visible without restarting the
     server.
+11. Long-running localhost service startup should have a standalone lifecycle
+    entrypoint that does not require WeChat/Telegram runtime startup; bridge
+    runtime may host it later, but the first service shell must be independently
+    startable.
 
 ## Ordered Executable Sequence
 
@@ -286,10 +290,20 @@ Implementation checklist:
   - isolated response execution
   - continuation rejection
   - optional bearer auth
-- [ ] Decide whether Phase 2 should expose `POST /v1/responses/compact` or keep
+- [x] Decide whether Phase 2 should expose `POST /v1/responses/compact` or keep
   it explicitly unsupported until compatibility/hardening
-- [ ] Add startup/lifecycle integration for a long-running localhost service
+  - current decision: keep it explicitly unsupported in the first native shell
+  - `src/providers/codex/native_api_server.ts` returns `501 not_implemented`
+    for `POST /v1/responses/compact` instead of inventing a second response
+    shape before continuation/compatibility work lands
+- [x] Add startup/lifecycle integration for a long-running localhost service
   outside unit tests
+  - `src/providers/codex/native_api_service.ts` now owns standalone provider
+    profile selection, auth-path binding, and lifecycle wiring over the
+    in-process native API server
+  - `src/cli.ts codex native-api-serve` starts the localhost service without
+    requiring WeChat/Telegram runtime startup, while preserving the unchanged
+    main bridge chat path
 
 ### 3. Continuation registry and sticky execution mapping
 
@@ -485,6 +499,11 @@ Only after:
   calling scattered provider primitives
 - [x] Resolve provider/runtime context per request so reconnect/account-switch
   changes remain visible to localhost callers without a restart
+- [x] Keep `POST /v1/responses/compact` explicitly unsupported until later
+  compatibility/hardening work instead of adding a premature second response
+  shape
+- [x] Add a standalone localhost service lifecycle entrypoint so native API
+  startup does not depend on WeChat/Telegram runtime startup
 
 ### Phase 2: Internal isolated-task routing
 
@@ -526,8 +545,10 @@ Only after:
 - [ ] Decide whether a single `packages/codex-native-api` package is enough or
   whether runtime/server should split
 - [ ] Define the minimal public API surface for package consumers
-- [ ] Ensure localhost server startup can work without requiring WeChat/Telegram
+- [x] Ensure localhost server startup can work without requiring WeChat/Telegram
   bridge runtime
+  - landed early via `src/providers/codex/native_api_service.ts` plus the
+    `codex native-api-serve` CLI entrypoint
 - [ ] Add package-level tests and exports once extraction begins
 
 ## Suggested Phase 1 Deliverable

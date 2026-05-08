@@ -12,6 +12,7 @@ import {
   materializeQrArtifact,
   pendingRestartNotificationsFile,
   parseCodexCleanupInternalThreadsArgs,
+  parseCodexNativeApiServeArgs,
   parseWeixinClearContextArgs,
   parseWeixinLoginArgs,
   parseWeixinServeArgs,
@@ -113,6 +114,30 @@ test('parseCodexCleanupInternalThreadsArgs defaults to dry-run and reads apply f
   });
 
   assert.equal(parseCodexCleanupInternalThreadsArgs(['--apply', '--dry-run']).dryRun, true);
+});
+
+test('parseCodexNativeApiServeArgs reads standalone native-api flags', () => {
+  assert.deepEqual(parseCodexNativeApiServeArgs([]), {
+    stateDir: null,
+    cwd: null,
+    host: null,
+    port: null,
+    providerProfileId: null,
+  });
+
+  assert.deepEqual(parseCodexNativeApiServeArgs([
+    '--state-dir', '/tmp/codexbridge-state',
+    '--cwd', '/tmp/project',
+    '--host', '127.0.0.1',
+    '--port', '43182',
+    '--provider-profile', 'openai-default',
+  ]), {
+    stateDir: '/tmp/codexbridge-state',
+    cwd: '/tmp/project',
+    host: '127.0.0.1',
+    port: 43182,
+    providerProfileId: 'openai-default',
+  });
 });
 
 test('resolveClearContextAccountId infers the only saved account', () => {

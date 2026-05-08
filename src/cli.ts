@@ -13,6 +13,7 @@ import { createCodexBridgeRuntime } from './runtime/bootstrap.js';
 import { createFileJsonRepositories } from './store/file_json/create_file_json_repositories.js';
 import { loadCodexProfilesFromEnv } from './providers/codex/config.js';
 import { CodexAccountManager } from './providers/codex/account_manager.js';
+import { CodexNativeApiService } from './providers/codex/native_api_service.js';
 import { OpenAINativeProviderPlugin } from './providers/openai_native/plugin.js';
 import { OpenAICompatibleProviderPlugin } from './providers/openai_compatible/plugin.js';
 import { WeixinBridgeRuntime } from './runtime/weixin_bridge_runtime.js';
@@ -42,6 +43,14 @@ interface CodexCleanupInternalThreadsArgs {
   limit: number;
 }
 
+interface CodexNativeApiServeArgs {
+  stateDir: string | null;
+  cwd: string | null;
+  host: string | null;
+  port: number | null;
+  providerProfileId: string | null;
+}
+
 interface ServeLockPayload {
   pid: number;
   startedAt: string;
@@ -60,6 +69,9 @@ interface PendingRestartNotification {
   queuedAt: string;
 }
 
+const DEFAULT_CODEX_NATIVE_API_HOST = '127.0.0.1';
+const DEFAULT_CODEX_NATIVE_API_PORT = 43182;
+
 async function main(argv: string[] = process.argv.slice(2)) {
   const [group, command, ...args] = argv;
   if (group === 'weixin' && command === 'login') {
@@ -73,6 +85,9 @@ async function main(argv: string[] = process.argv.slice(2)) {
   }
   if (group === 'codex' && command === 'cleanup-internal-threads') {
     return runCodexCleanupInternalThreads(args);
+  }
+  if (group === 'codex' && command === 'native-api-serve') {
+    return runCodexNativeApiServe(args);
   }
   printUsage();
   process.exitCode = 1;
@@ -331,6 +346,105 @@ async function runCodexCleanupInternalThreads(args: string[]) {
   }
 }
 
+async function runCodexNativeApiServe(args: string[]) {
+  const i18n = createI18n();
+  const options = parseCodexNativeApiServeArgs(args);
+  const stateDir = path.resolve(options.stateDir ?? defaultCodexBridgeStateDir());
+  const defaultCwd = path.resolve(options.cwd ?? process.env.CODEXBRIDGE_DEFAULT_CWD ?? process.cwd());
+  const serveLock = await acquireServeLock(path.join(stateDir, 'runtime', 'codex-native-api-serve.lock'));
+  const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
+  const codexProfiles = loadCodexProfilesFromEnv();
+  const codexAuthManager = createWeixinServeCodexAuthManager(stateDir);
+  const runtime = createCodexBridgeRuntime({
+    providerPlugins: [
+      new OpenAINativeProviderPlugin(),
+      new OpenAICompatibleProviderPlugin(),
+    ],
+    providerProfiles: codexProfiles.profiles,
+    defaultProviderProfileId: codexProfiles.defaultProviderProfileId,
+    defaultCwd,
+    locale: i18n.locale,
+    repositories,
+    assistantAttachmentRoot: path.join(stateDir, 'assistant', 'attachments'),
+    codexAuthManager,
+  });
+  const host = options.host
+    ?? normalizeCliString(process.env.CODEX_NATIVE_API_HOST)
+    ?? DEFAULT_CODEX_NATIVE_API_HOST;
+  const port = options.port
+    ?? parseOptionalNonNegativeInt(process.env.CODEX_NATIVE_API_PORT)
+    ?? DEFAULT_CODEX_NATIVE_API_PORT;
+  const providerProfileId = options.providerProfileId
+    ?? normalizeCliString(process.env.CODEX_NATIVE_API_PROVIDER_PROFILE_ID)
+    ?? null;
+  const authToken = normalizeCliString(process.env.CODEX_NATIVE_API_AUTH_TOKEN);
+  const defaultModel = normalizeCliString(process.env.CODEX_NATIVE_API_DEFAULT_MODEL);
+  const requestTitlePrefix = normalizeCliString(process.env.CODEX_NATIVE_API_TITLE_PREFIX);
+  const nativeApi = new CodexNativeApiService({
+    providerProfiles: runtime.repositories.providerProfiles,
+    providerRegistry: runtime.registry,
+    defaultProviderProfileId: runtime.config.defaultProviderProfileId,
+    providerProfileId,
+    authPath: codexAuthManager.authPath,
+    env: process.env,
+    host,
+    port,
+    authToken,
+    defaultModel,
+    defaultCwd,
+    defaultLocale: i18n.locale,
+    requestTitlePrefix,
+  });
+
+  process.once('exit', () => {
+    serveLock.releaseSync();
+  });
+
+  let stopped = false;
+  let resolveStopped: (() => void) | null = null;
+  const stoppedPromise = new Promise<void>((resolve) => {
+    resolveStopped = resolve;
+  });
+  const stop = async (signal: string) => {
+    if (stopped) {
+      return;
+    }
+    stopped = true;
+    process.stdout.write(`${i18n.t('cli.nativeApiServe.stopping', { signal })}\n`);
+    try {
+      await nativeApi.stop();
+    } finally {
+      await stopRuntimeProviderPlugins(runtime.registry.listProviders());
+      await serveLock.release();
+      resolveStopped?.();
+    }
+  };
+  process.on('SIGINT', () => { void stop('SIGINT'); });
+  process.on('SIGTERM', () => { void stop('SIGTERM'); });
+
+  try {
+    const binding = await nativeApi.start();
+    process.stdout.write(`${i18n.t('cli.nativeApiServe.starting')}\n`);
+    process.stdout.write(`state_dir: ${stateDir}\n`);
+    process.stdout.write(`default_cwd: ${defaultCwd}\n`);
+    process.stdout.write(`host: ${host}\n`);
+    process.stdout.write(`port: ${port}\n`);
+    process.stdout.write(`base_url: ${nativeApi.baseUrl}\n`);
+    process.stdout.write(`provider_profile: ${binding.providerProfileId}\n`);
+    process.stdout.write(`provider_kind: ${binding.providerKind}\n`);
+    process.stdout.write(`provider_display_name: ${binding.providerDisplayName}\n`);
+    process.stdout.write(`auth_mode: ${authToken ? i18n.t('common.enabled') : i18n.t('common.disabled')}\n`);
+    process.stdout.write(`auth_path: ${binding.authPath ?? i18n.t('common.none')}\n`);
+    await stoppedPromise;
+  } finally {
+    if (!stopped) {
+      await nativeApi.stop().catch(() => {});
+      await stopRuntimeProviderPlugins(runtime.registry.listProviders());
+      await serveLock.release();
+    }
+  }
+}
+
 function parseWeixinLoginArgs(args: string[]): WeixinLoginArgs {
   const options: WeixinLoginArgs = {
     baseUrl: null,
@@ -444,6 +558,45 @@ function parseCodexCleanupInternalThreadsArgs(args: string[]): CodexCleanupInter
     }
     if (arg === '--dry-run') {
       options.dryRun = true;
+    }
+  }
+  return options;
+}
+
+function parseCodexNativeApiServeArgs(args: string[]): CodexNativeApiServeArgs {
+  const options: CodexNativeApiServeArgs = {
+    stateDir: null,
+    cwd: null,
+    host: null,
+    port: null,
+    providerProfileId: null,
+  };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    const next = args[index + 1];
+    if (arg === '--state-dir' && next) {
+      options.stateDir = next;
+      index += 1;
+      continue;
+    }
+    if (arg === '--cwd' && next) {
+      options.cwd = next;
+      index += 1;
+      continue;
+    }
+    if (arg === '--host' && next) {
+      options.host = next;
+      index += 1;
+      continue;
+    }
+    if (arg === '--port' && next) {
+      options.port = parseOptionalNonNegativeInt(next);
+      index += 1;
+      continue;
+    }
+    if (arg === '--provider-profile' && next) {
+      options.providerProfileId = next;
+      index += 1;
     }
   }
   return options;
@@ -746,6 +899,7 @@ function printUsage() {
     createI18n().t('cli.usage.clearContext'),
     createI18n().t('cli.usage.serve'),
     createI18n().t('cli.usage.cleanupInternalThreads'),
+    createI18n().t('cli.usage.nativeApiServe'),
   ].join('\n'));
 }
 
@@ -783,6 +937,19 @@ function formatError(error: unknown) {
   return String(error);
 }
 
+function normalizeCliString(value: unknown): string | null {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  return normalized || null;
+}
+
+function parseOptionalNonNegativeInt(value: unknown): number | null {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
+}
+
 const thisFile = fileURLToPath(import.meta.url);
 if (process.argv[1] && path.resolve(process.argv[1]) === thisFile) {
   await main();
@@ -798,6 +965,7 @@ export {
   createWeixinServeCodexAuthManager,
   pendingRestartNotificationsFile,
   parseCodexCleanupInternalThreadsArgs,
+  parseCodexNativeApiServeArgs,
   parseWeixinClearContextArgs,
   parseWeixinLoginArgs,
   parseWeixinServeArgs,

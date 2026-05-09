@@ -13,6 +13,7 @@ import { createCodexBridgeRuntime } from './runtime/bootstrap.js';
 import { createFileJsonRepositories } from './store/file_json/create_file_json_repositories.js';
 import { loadCodexProfilesFromEnv } from './providers/codex/config.js';
 import { CodexAccountManager } from './providers/codex/account_manager.js';
+import { CodexGoalManager } from './providers/codex/goal_state.js';
 import { CodexNativeApiService } from './providers/codex/native_api_service.js';
 import { OpenAINativeProviderPlugin } from './providers/openai_native/plugin.js';
 import { OpenAICompatibleProviderPlugin } from './providers/openai_compatible/plugin.js';
@@ -207,6 +208,7 @@ async function runWeixinServe(args: string[]) {
     repositories,
     assistantAttachmentRoot: path.join(stateDir, 'assistant', 'attachments'),
     codexAuthManager,
+    codexGoalManager: createWeixinServeCodexGoalManager(stateDir),
     restartBridge: async ({ event }) => {
       await queueWeixinBridgeRestart({
         stateDir,
@@ -284,6 +286,7 @@ async function runCodexCleanupInternalThreads(args: string[]) {
     repositories,
     assistantAttachmentRoot: path.join(stateDir, 'assistant', 'attachments'),
     codexAuthManager: createWeixinServeCodexAuthManager(stateDir),
+    codexGoalManager: createWeixinServeCodexGoalManager(stateDir),
   });
 
   process.stdout.write(`${i18n.t('cli.cleanupInternalThreads.starting')}\n`);
@@ -367,6 +370,7 @@ async function runCodexNativeApiServe(args: string[]) {
     repositories,
     assistantAttachmentRoot: path.join(stateDir, 'assistant', 'attachments'),
     codexAuthManager,
+    codexGoalManager: createWeixinServeCodexGoalManager(stateDir),
   });
   const host = options.host
     ?? normalizeCliString(process.env.CODEX_NATIVE_API_HOST)
@@ -923,6 +927,12 @@ function codexLoginStateDir(stateDir: string) {
 function createWeixinServeCodexAuthManager(stateDir: string) {
   return new CodexAccountManager({
     rootDir: codexLoginStateDir(stateDir),
+  });
+}
+
+function createWeixinServeCodexGoalManager(stateDir: string) {
+  return new CodexGoalManager({
+    filePath: path.join(path.resolve(stateDir), 'runtime', 'codex-goal.txt'),
   });
 }
 

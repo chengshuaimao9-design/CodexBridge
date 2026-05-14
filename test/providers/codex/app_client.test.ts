@@ -1405,7 +1405,11 @@ test('CodexAppClient times out individual JSON-RPC requests and clears pending s
   });
 
   client.connected = true;
+  client.transportKind = 'websocket';
   client.socket = {} as unknown as WebSocket;
+  Object.defineProperty(client.socket, 'readyState', {
+    value: WebSocket.OPEN,
+  });
   client.send = (() => {}) as any;
 
   await assert.rejects(
@@ -1639,6 +1643,123 @@ test('CodexAppClient falls back to progress text when ephemeral threads reject i
     delta: '{"title":"测试"}',
     outputKind: 'final_answer',
   }]);
+});
+
+test('CodexAppClient stdio wait ignores intermediate item completion until turn completion', async () => {
+  let nowMs = 0;
+  let sentStartup = false;
+  let sentFinal = false;
+  const client = new CodexAppClient({
+    codexCliBin: 'codex',
+    turnPollNow: () => nowMs,
+    turnPollSleep: async (ms) => {
+      nowMs += ms;
+      if (!sentStartup) {
+        sentStartup = true;
+        client.emit('notification', {
+          method: 'item/started',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+              id: 'startup-item',
+              type: 'agentMessage',
+              phase: 'commentary',
+            },
+          },
+        });
+        client.emit('notification', {
+          method: 'item/agentMessage/delta',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            itemId: 'startup-item',
+            phase: 'commentary',
+            delta: 'Using startup workflow.',
+          },
+        });
+        client.emit('notification', {
+          method: 'item/completed',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+              id: 'startup-item',
+              type: 'agentMessage',
+              phase: 'commentary',
+              text: 'Using startup workflow.',
+            },
+          },
+        });
+      }
+      if (!sentFinal && nowMs >= 750) {
+        sentFinal = true;
+        client.emit('notification', {
+          method: 'item/started',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+              id: 'final-item',
+              type: 'agentMessage',
+              phase: 'final_answer',
+            },
+          },
+        });
+        client.emit('notification', {
+          method: 'item/agentMessage/delta',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            itemId: 'final-item',
+            phase: 'final_answer',
+            delta: 'OK',
+          },
+        });
+        client.emit('notification', {
+          method: 'item/completed',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+              id: 'final-item',
+              type: 'agentMessage',
+              phase: 'final_answer',
+              text: 'OK',
+            },
+          },
+        });
+        client.emit('notification', {
+          method: 'turn/completed',
+          params: {
+            threadId: 'thread-1',
+          },
+        });
+      }
+    },
+  });
+  client.transportKind = 'stdio';
+
+  client.request = async (method) => {
+    if (method === 'turn/start') {
+      return { turn: { id: 'turn-1' } };
+    }
+    throw new Error(`Unexpected method: ${method}`);
+  };
+
+  const result = await client.startTurn({
+    threadId: 'thread-1',
+    inputText: 'hello',
+    model: 'gpt-5.4',
+    effort: null,
+    collaborationMode: 'default',
+    timeoutMs: 2500,
+  });
+
+  assert.equal(result.outputText, 'OK');
+  assert.equal(result.outputState, 'complete');
+  assert.equal(result.finalSource, 'progress_only');
+  assert.equal(sentFinal, true);
 });
 
 test('CodexAppClient waits for assistant output after a terminal turn initially contains no visible items', async () => {

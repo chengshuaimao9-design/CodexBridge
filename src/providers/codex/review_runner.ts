@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { normalizeLocale } from '../../i18n/index.js';
+import { createCodexCliLaunchSpec } from './cli_command.js';
 import type {
   ProviderReviewTarget,
   ProviderThreadSummary,
@@ -116,11 +117,19 @@ export class CodexCliReviewRunner implements CodexReviewRunnerLike {
       target,
       locale,
     });
-    const child = this.spawnImpl(codexCliBin, args, {
+    const launchSpec = createCodexCliLaunchSpec({
+      command: codexCliBin,
+      args,
+    });
+    const spawnOptions = {
       cwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
-    });
+      ...launchSpec.options,
+    };
+    const child = launchSpec.args
+      ? this.spawnImpl(launchSpec.command, launchSpec.args, spawnOptions as any)
+      : this.spawnImpl(launchSpec.command, spawnOptions as any);
     state.child = child;
 
     const stdoutChunks: string[] = [];

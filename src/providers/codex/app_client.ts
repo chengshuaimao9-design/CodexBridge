@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { writeSequencedStderrLine } from '../../core/sequenced_stderr.js';
 import { readCodexAccountIdentity } from './auth_state.js';
+import { createCodexCliLaunchSpec } from './cli_command.js';
 import type {
   ProviderAppInfo,
   ProviderApprovalRequest,
@@ -278,6 +279,8 @@ interface ProgressState {
   lastAssistantActivityAt: number;
 }
 
+type CodexAppServerTransport = 'auto' | 'websocket' | 'stdio';
+
 interface CodexAppClientOptions {
   codexCliBin: string;
   codexCliArgs?: string[];
@@ -289,6 +292,7 @@ interface CodexAppClientOptions {
   clientInfo?: CodexClientInfo;
   spawnImpl?: typeof spawn;
   webSocketFactory?: (url: string) => WebSocket;
+  appServerTransport?: CodexAppServerTransport | string | null;
   platform?: NodeJS.Platform;
   logger?: CodexAppLogger;
   turnPollSleep?: (ms: number) => Promise<void>;
@@ -329,6 +333,8 @@ export class CodexAppClient extends EventEmitter {
 
   webSocketFactory: (url: string) => WebSocket;
 
+  appServerTransport: CodexAppServerTransport;
+
   platform: NodeJS.Platform;
 
   logger: CodexAppLogger;
@@ -340,6 +346,10 @@ export class CodexAppClient extends EventEmitter {
   child: ChildProcess | null;
 
   socket: WebSocket | null;
+
+  transportKind: 'websocket' | 'stdio' | null;
+
+  stdioLineBuffer: string;
 
   pending: Map<string, PendingRequest>;
 
@@ -374,6 +384,7 @@ export class CodexAppClient extends EventEmitter {
     },
     spawnImpl = spawn,
     webSocketFactory = (url) => new WebSocket(url),
+    appServerTransport = normalizeCodexAppServerTransport(process.env.CODEX_APP_SERVER_TRANSPORT),
     platform = process.platform,
     logger = createNoopLogger(),
     turnPollSleep = sleep,
@@ -390,6 +401,7 @@ export class CodexAppClient extends EventEmitter {
     this.clientInfo = clientInfo;
     this.spawnImpl = spawnImpl;
     this.webSocketFactory = webSocketFactory;
+    this.appServerTransport = normalizeCodexAppServerTransport(appServerTransport);
     this.platform = platform;
     this.logger = logger;
     this.turnPollSleep = turnPollSleep;
@@ -397,6 +409,8 @@ export class CodexAppClient extends EventEmitter {
 
     this.child = null;
     this.socket = null;
+    this.transportKind = null;
+    this.stdioLineBuffer = '';
     this.pending = new Map();
     this.pendingApprovals = new Map();
     this.approvedExecutions = new Map();
@@ -420,8 +434,18 @@ export class CodexAppClient extends EventEmitter {
     return this.connected;
   }
 
+  isTransportConnected(): boolean {
+    if (!this.connected) {
+      return false;
+    }
+    if (this.transportKind === 'stdio') {
+      return Boolean(this.child?.stdin?.writable);
+    }
+    return Boolean(this.socket && this.socket.readyState === WebSocket.OPEN);
+  }
+
   async start(): Promise<void> {
-    if (this.connected) {
+    if (this.isTransportConnected()) {
       return;
     }
     if (this.startPromise) {
@@ -441,6 +465,8 @@ export class CodexAppClient extends EventEmitter {
     this.connected = false;
     this.socket?.close();
     this.socket = null;
+    this.transportKind = null;
+    this.stdioLineBuffer = '';
     this.childStartError = null;
     this.childStderrTail = [];
     const child = this.child;
@@ -1018,21 +1044,26 @@ export class CodexAppClient extends EventEmitter {
     }
     this.childStartError = null;
     this.childStderrTail = [];
-    this.port = await reservePort();
+    this.stdioLineBuffer = '';
+    const transportKind = this.resolveAppServerTransportKind();
+    this.port = transportKind === 'websocket' ? await reservePort() : null;
     const featureArgs = this.enabledFeatures.flatMap((feature) => ['--enable', feature]);
+    const appServerArgs = transportKind === 'websocket'
+      ? [...this.codexCliArgs, 'app-server', ...featureArgs, '--listen', `ws://127.0.0.1:${this.port}`]
+      : [...this.codexCliArgs, 'app-server', ...featureArgs];
     const launchSpec = createCodexAppServerLaunchSpec({
       command: this.codexCliBin,
-      args: [...this.codexCliArgs, 'app-server', ...featureArgs, '--listen', `ws://127.0.0.1:${this.port}`],
+      args: appServerArgs,
       platform: this.platform,
     });
     try {
       this.child = launchSpec.args
         ? this.spawnImpl(launchSpec.command, launchSpec.args, {
-          stdio: ['ignore', 'pipe', 'pipe'],
+          stdio: transportKind === 'stdio' ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
           ...launchSpec.options,
         })
         : this.spawnImpl(launchSpec.command, {
-          stdio: ['ignore', 'pipe', 'pipe'],
+          stdio: transportKind === 'stdio' ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
           ...launchSpec.options,
         });
     } catch (error) {
@@ -1046,12 +1077,16 @@ export class CodexAppClient extends EventEmitter {
       command: launchSpec.displayCommand,
       spawnCommand: launchSpec.command,
       spawnArgs: launchSpec.args,
+      transportKind,
       port: this.port,
       codexCliArgs: this.codexCliArgs,
       enabledFeatures: this.enabledFeatures,
       autolaunch: this.autolaunch,
       launchCommand: this.launchCommand,
     });
+    if (transportKind === 'stdio') {
+      this.child.stdout?.on('data', (chunk) => this.handleStdioData(chunk));
+    }
     this.child.stderr?.on('data', (chunk) => {
       const text = String(chunk).trim();
       if (text) {
@@ -1069,9 +1104,37 @@ export class CodexAppClient extends EventEmitter {
     this.child.on('exit', () => {
       this.connected = false;
       this.socket = null;
+      this.transportKind = null;
     });
-    await this.connectWebSocket();
+    if (transportKind === 'stdio') {
+      this.transportKind = 'stdio';
+      this.connected = true;
+    } else {
+      await this.connectWebSocket();
+    }
     await this.initialize();
+  }
+
+  resolveAppServerTransportKind(): 'websocket' | 'stdio' {
+    if (this.appServerTransport === 'stdio') {
+      return 'stdio';
+    }
+    return 'websocket';
+  }
+
+  handleStdioData(chunk: unknown): void {
+    this.stdioLineBuffer += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk ?? '');
+    for (;;) {
+      const newlineIndex = this.stdioLineBuffer.indexOf('\n');
+      if (newlineIndex < 0) {
+        break;
+      }
+      const line = this.stdioLineBuffer.slice(0, newlineIndex).trim();
+      this.stdioLineBuffer = this.stdioLineBuffer.slice(newlineIndex + 1);
+      if (line) {
+        this.handleMessage(line);
+      }
+    }
   }
 
   async connectWebSocket(): Promise<void> {
@@ -1097,6 +1160,7 @@ export class CodexAppClient extends EventEmitter {
           };
           ws.addEventListener('open', () => {
             this.socket = ws;
+            this.transportKind = 'websocket';
             this.connected = true;
             ws.addEventListener('message', (message) => this.handleMessage(String(message.data)));
             ws.addEventListener('close', () => {
@@ -1139,7 +1203,7 @@ export class CodexAppClient extends EventEmitter {
   }
 
   async request(method: string, params: any, { timeoutMs = 30_000 }: { timeoutMs?: number } = {}): Promise<any> {
-    if (!this.socket || !this.connected) {
+    if (!this.isTransportConnected()) {
       await this.start();
     }
     const id = String(++this.requestId);
@@ -1190,6 +1254,13 @@ export class CodexAppClient extends EventEmitter {
   }
 
   send(payload: any): void {
+    if (this.transportKind === 'stdio') {
+      if (!this.child?.stdin?.writable) {
+        throw new Error('Codex app-server stdio is not open');
+      }
+      this.child.stdin.write(`${JSON.stringify(payload)}\n`);
+      return;
+    }
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       throw new Error('Codex app-server socket is not open');
     }
@@ -1470,8 +1541,9 @@ export class CodexAppClient extends EventEmitter {
     let lastTurnSnapshotKey = null;
     let stableTerminalReadCount = 0;
     let pollCount = 0;
-    let includeTurnsUnsupported = false;
-    let includeTurnsUnsupportedAt = 0;
+    let includeTurnsUnsupported = this.transportKind === 'stdio';
+    let includeTurnsUnsupportedAt = includeTurnsUnsupported ? this.turnPollNow() : 0;
+    let threadSummaryForFallback: ProviderThreadSummary | null = null;
     let pendingApprovalWaitLogged = false;
     let lastPendingApprovalCount = 0;
     const terminalSettleMs = computeTerminalSettleMs(timeoutMs);
@@ -1552,50 +1624,50 @@ export class CodexAppClient extends EventEmitter {
           lastPendingApprovalCount = pendingApprovalCount;
         }
         pollCount += 1;
-        let thread = null;
-        try {
-          thread = await this.readThread(threadId, !includeTurnsUnsupported);
-        } catch (error) {
-          if (isThreadMaterializationPendingError(error)) {
-            this.logDebug('turn_poll_retry', {
-              threadId,
-              turnId,
-              pollCount,
-              reason: 'thread_materialization_pending',
-            });
-            await this.turnPollSleep(1000);
-            continue;
-          }
-          if (isRequestTimeoutError(error)) {
-            this.logDebug('turn_poll_retry', {
-              threadId,
-              turnId,
-              pollCount,
-              reason: 'thread_read_timeout',
-            });
-            await this.turnPollSleep(1000);
-            continue;
-          }
-          if (isIncludeTurnsUnsupportedError(error)) {
-            includeTurnsUnsupported = true;
-            includeTurnsUnsupportedAt ||= this.turnPollNow();
-            this.logDebug('turn_poll_retry', {
-              threadId,
-              turnId,
-              pollCount,
-              reason: 'thread_read_include_turns_unsupported',
-            });
-            try {
-              thread = await this.readThread(threadId, false);
-            } catch (fallbackError) {
-              if (isThreadMaterializationPendingError(fallbackError) || isRequestTimeoutError(fallbackError)) {
-                await this.turnPollSleep(250);
-                continue;
-              }
-              throw fallbackError;
+        let thread = threadSummaryForFallback;
+        if (!includeTurnsUnsupported) {
+          try {
+            thread = await this.readThread(threadId, true);
+            threadSummaryForFallback = thread;
+          } catch (error) {
+            if (isThreadMaterializationPendingError(error)) {
+              this.logDebug('turn_poll_retry', {
+                threadId,
+                turnId,
+                pollCount,
+                reason: 'thread_materialization_pending',
+              });
+              await this.turnPollSleep(1000);
+              continue;
             }
-          } else {
-            throw error;
+            if (isRequestTimeoutError(error)) {
+              this.logDebug('turn_poll_retry', {
+                threadId,
+                turnId,
+                pollCount,
+                reason: 'thread_read_timeout',
+              });
+              await this.turnPollSleep(1000);
+              continue;
+            }
+            if (isIncludeTurnsUnsupportedError(error)) {
+              includeTurnsUnsupported = true;
+              includeTurnsUnsupportedAt ||= this.turnPollNow();
+              try {
+                thread = await this.readThread(threadId, false);
+                threadSummaryForFallback = thread;
+              } catch {
+                thread = threadSummaryForFallback;
+              }
+              this.logDebug('turn_poll_retry', {
+                threadId,
+                turnId,
+                pollCount,
+                reason: 'thread_read_include_turns_unsupported',
+              });
+            } else {
+              throw error;
+            }
           }
         }
         const turn = includeTurnsUnsupported
@@ -2336,6 +2408,14 @@ function normalizeStringList(value: unknown): string[] {
   return Array.isArray(value)
     ? value.map((entry) => String(entry ?? '').trim()).filter(Boolean)
     : [];
+}
+
+function normalizeCodexAppServerTransport(value: unknown): CodexAppServerTransport {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (normalized === 'stdio' || normalized === 'websocket') {
+    return normalized;
+  }
+  return 'auto';
 }
 
 function normalizeBoolean(value: unknown): boolean | null {
@@ -3180,10 +3260,6 @@ function isTerminalNotificationForThread(
   const method = String(notification?.method ?? '').replace(/[^a-z]/gi, '').toLowerCase();
   if (method === 'turncompleted') {
     return true;
-  }
-  if (method === 'itemcompleted') {
-    const notificationTurnId = extractNotificationTurnId(notification?.params ?? null);
-    return !notificationTurnId || notificationTurnId === turnId;
   }
   return false;
 }
@@ -4062,22 +4138,7 @@ function createCodexAppServerLaunchSpec({
   options?: Record<string, unknown>;
   displayCommand: string;
 } {
-  if (platform === 'win32' && /\.(cmd|bat)$/iu.test(command)) {
-    return {
-      command: buildWindowsShellCommandLine([command, ...args]),
-      args: null,
-      options: {
-        shell: true,
-        windowsHide: true,
-      },
-      displayCommand: command,
-    };
-  }
-  return {
-    command,
-    args,
-    displayCommand: command,
-  };
+  return createCodexCliLaunchSpec({ command, args, platform });
 }
 
 function createCodexLaunchError({
@@ -4130,21 +4191,6 @@ function createCodexConnectTimeoutError({
     ? ` Last stderr: ${stderrTail.join(' | ')}`
     : '';
   return new Error(`Timed out connecting to ${url} after launching "${command}".${detail}`);
-}
-
-function buildWindowsShellCommandLine(parts: string[]): string {
-  return parts.map(quoteWindowsShellArgument).join(' ');
-}
-
-function quoteWindowsShellArgument(value: string): string {
-  const normalized = String(value ?? '');
-  if (!normalized) {
-    return '""';
-  }
-  if (!/[\s"]/u.test(normalized)) {
-    return normalized;
-  }
-  return `"${normalized.replace(/"/g, '""')}"`;
 }
 
 async function reservePort(): Promise<number> {

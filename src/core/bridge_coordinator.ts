@@ -9050,7 +9050,12 @@ export class BridgeCoordinator {
     if (!normalizedName) {
       return false;
     }
-    const features = await this.listCodexExperimentalFeatures();
+    let features: CodexExperimentalFeatureInfo[];
+    try {
+      features = await this.listCodexExperimentalFeatures();
+    } catch {
+      return false;
+    }
     return features.some((feature) => feature.name.toLowerCase() === normalizedName && feature.enabled);
   }
 

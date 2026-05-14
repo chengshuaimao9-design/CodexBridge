@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createCodexCliLaunchSpec } from './cli_command.js';
 
 export interface CodexExperimentalFeatureInfo {
   name: string;
@@ -14,6 +15,7 @@ export interface CodexExperimentalFeatureCatalogEntry {
 interface CodexExperimentalFeaturesManagerOptions {
   execFileSyncImpl?: typeof execFileSync;
   env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
 }
 
 export class CodexExperimentalFeaturesManager {
@@ -21,12 +23,16 @@ export class CodexExperimentalFeaturesManager {
 
   private readonly env: NodeJS.ProcessEnv;
 
+  private readonly platform: NodeJS.Platform;
+
   constructor({
     execFileSyncImpl = execFileSync,
     env = process.env,
+    platform = process.platform,
   }: CodexExperimentalFeaturesManagerOptions = {}) {
     this.execFileSyncImpl = execFileSyncImpl;
     this.env = env;
+    this.platform = platform;
   }
 
   async listFeatures({
@@ -35,10 +41,7 @@ export class CodexExperimentalFeaturesManager {
     codexCliBin?: string | null;
   } = {}): Promise<CodexExperimentalFeatureInfo[]> {
     const resolvedCliBin = normalizeCodexCliBin(codexCliBin);
-    const output = this.execFileSyncImpl(resolvedCliBin, ['features', 'list'], {
-      encoding: 'utf8',
-      env: this.env,
-    });
+    const output = this.execCodexCliSync(resolvedCliBin, ['features', 'list']);
     return parseCodexFeaturesListOutput(output);
   }
 
@@ -48,9 +51,7 @@ export class CodexExperimentalFeaturesManager {
     codexCliBin?: string | null;
   } = {}): Promise<void> {
     const resolvedCliBin = normalizeCodexCliBin(codexCliBin);
-    this.execFileSyncImpl(resolvedCliBin, ['features', 'enable', featureName], {
-      encoding: 'utf8',
-      env: this.env,
+    this.execCodexCliSync(resolvedCliBin, ['features', 'enable', featureName], {
       stdio: 'pipe',
     });
   }
@@ -61,11 +62,31 @@ export class CodexExperimentalFeaturesManager {
     codexCliBin?: string | null;
   } = {}): Promise<void> {
     const resolvedCliBin = normalizeCodexCliBin(codexCliBin);
-    this.execFileSyncImpl(resolvedCliBin, ['features', 'disable', featureName], {
-      encoding: 'utf8',
-      env: this.env,
+    this.execCodexCliSync(resolvedCliBin, ['features', 'disable', featureName], {
       stdio: 'pipe',
     });
+  }
+
+  private execCodexCliSync(
+    codexCliBin: string,
+    args: string[],
+    options: { stdio?: 'pipe' } = {},
+  ): string {
+    const launchSpec = createCodexCliLaunchSpec({
+      command: codexCliBin,
+      args,
+      platform: this.platform,
+    });
+    const execOptions = {
+      encoding: 'utf8',
+      env: this.env,
+      ...options,
+      ...launchSpec.options,
+    };
+    if (launchSpec.args) {
+      return this.execFileSyncImpl(launchSpec.command, launchSpec.args, execOptions as any);
+    }
+    return (this.execFileSyncImpl as any)(launchSpec.command, execOptions);
   }
 }
 
@@ -112,7 +133,7 @@ export function getPublicCodexExperimentalFeatures(
 }
 
 function parseCodexFeatureListLine(line: string): CodexExperimentalFeatureInfo | null {
-  const parts = line.split(/\s{2,}/u).map((part) => part.trim()).filter(Boolean);
+  const parts = line.split(/\t+|\s{2,}/u).map((part) => part.trim()).filter(Boolean);
   if (parts.length !== 3) {
     return null;
   }

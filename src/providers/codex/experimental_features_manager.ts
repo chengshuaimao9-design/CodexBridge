@@ -35,11 +35,15 @@ export class CodexExperimentalFeaturesManager {
     codexCliBin?: string | null;
   } = {}): Promise<CodexExperimentalFeatureInfo[]> {
     const resolvedCliBin = normalizeCodexCliBin(codexCliBin);
-    const output = this.execFileSyncImpl(resolvedCliBin, ['features', 'list'], {
-      encoding: 'utf8',
-      env: this.env,
-    });
-    return parseCodexFeaturesListOutput(output);
+    try {
+      const output = this.execFileSyncImpl(resolvedCliBin, ['features', 'list'], {
+        encoding: 'utf8',
+        env: this.env,
+      });
+      return parseCodexFeaturesListOutput(output);
+    } catch {
+      return [];
+    }
   }
 
   async enableFeature(featureName: string, {

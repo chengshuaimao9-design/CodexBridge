@@ -73,3 +73,15 @@ test('CodexExperimentalFeaturesManager delegates list/enable/disable to codex fe
     { command: '/opt/codex/bin/codex', args: ['features', 'disable', 'memories'] },
   ]);
 });
+
+test('CodexExperimentalFeaturesManager treats unavailable feature listing as empty', async () => {
+  const manager = new CodexExperimentalFeaturesManager({
+    execFileSyncImpl: (() => {
+      throw Object.assign(new Error('spawnSync codex ENOENT'), {
+        code: 'ENOENT',
+      });
+    }) as any,
+  });
+
+  assert.deepEqual(await manager.listFeatures(), []);
+});

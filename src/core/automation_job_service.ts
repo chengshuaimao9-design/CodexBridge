@@ -235,11 +235,14 @@ export class AutomationJobService {
   } = {}): AutomationJob {
     const current = this.requireById(id);
     const now = this.now();
+    const deliveredAt = Object.prototype.hasOwnProperty.call(params, 'deliveredAt')
+      ? normalizeNullableNumber(params.deliveredAt)
+      : now;
     return this.updateJob(id, {
       running: false,
       nextRunAt: computeNextRunAt(current.schedule, now),
       lastRunAt: now,
-      lastDeliveredAt: params.deliveredAt ?? now,
+      lastDeliveredAt: deliveredAt,
       lastResultPreview: normalizeNullableString(params.resultPreview),
       lastError: normalizeNullableString(params.error),
     });

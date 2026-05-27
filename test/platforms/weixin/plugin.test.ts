@@ -876,6 +876,45 @@ test('WeixinPlatformPlugin sendText returns a structured failure when iLink send
   assert.equal(attempts, 4);
 });
 
+test('WeixinPlatformPlugin backs off between ret -2 retries instead of retrying immediately', async () => {
+  const rootDir = makeTempAccountsDir();
+  const waits: number[] = [];
+  const accountStore = new WeixinAccountStore({ rootDir });
+  const plugin = makePlugin({
+    sleepImpl: async (ms: number) => {
+      waits.push(ms);
+    },
+    chunkIntervalMs: 0,
+    accountStore,
+    config: {
+      enabled: true,
+      accountId: 'bot-account',
+      token: 'token',
+      baseUrl: 'https://ilinkai.weixin.qq.com',
+      cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
+      dmPolicy: 'open',
+      groupPolicy: 'disabled',
+      allowFrom: [],
+      groupAllowFrom: [],
+      stateDir: path.dirname(path.dirname(rootDir)),
+      accountsDir: rootDir,
+      maxMessageLength: 4000,
+    },
+  });
+  (plugin as any).client = {
+    async sendMessage() {
+      return { ret: -2 };
+    },
+  };
+
+  await plugin.sendText({
+    externalScopeId: 'wxid_sender',
+    content: 'hello from bridge',
+  });
+
+  assert.deepEqual(waits, [5_000, 10_000, 15_000]);
+});
+
 test('WeixinPlatformPlugin pauses polling after session expired and skips the next network poll', async () => {
   const rootDir = makeTempAccountsDir();
   const waits: number[] = [];
@@ -1048,8 +1087,8 @@ test('WeixinPlatformPlugin retries failed sends through the same global interval
   });
 
   assert.equal(result.success, true);
-  assert.deepEqual(waits, [3000, 3000]);
-  assert.deepEqual(sentAt, [5000, 8000, 11000]);
+  assert.deepEqual(waits, [5000, 10000]);
+  assert.deepEqual(sentAt, [5000, 10000, 20000]);
 });
 
 test('WeixinPlatformPlugin keeps fenced code blocks intact when splitting long text deliveries', () => {

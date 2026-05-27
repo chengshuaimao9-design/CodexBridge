@@ -729,6 +729,62 @@ test('WeixinBridgeRuntime runs due automation jobs against the same WeChat scope
   assert.ok(typeof completedCalls[0]?.deliveredAt === 'number');
 });
 
+test('WeixinBridgeRuntime defers automation jobs when final delivery is rate-limited', async () => {
+  const deferredCalls: Array<{ id: string; nextRunAt: number }> = [];
+  const completedCalls: Array<{ id: string; resultPreview?: string | null; error?: string | null; deliveredAt?: number | null }> = [];
+  const job = {
+    id: 'auto-rate-limit-1',
+    platform: 'weixin',
+    externalScopeId: 'wxid_1',
+    title: '助理检查提醒',
+    mode: 'standalone',
+    bridgeSessionId: 'session-auto-rate-limit-1',
+    cwd: '/tmp/codexbridge-auto',
+    locale: 'zh-CN',
+    prompt: '发送助理检查',
+  };
+  const runtime = makeRuntime({
+    automationJobs: {
+      claimDueJobs() {
+        return [job];
+      },
+      deferJob(id: string, nextRunAt: number) {
+        deferredCalls.push({ id, nextRunAt });
+      },
+      completeJob(id: string, payload: any) {
+        completedCalls.push({ id, ...payload });
+      },
+      resetRunningJobs() {},
+    },
+    sendText: async ({ content }) => ({
+      success: false,
+      deliveredCount: 0,
+      deliveredText: '',
+      failedIndex: 0,
+      failedText: content,
+      error: '微信消息发送失败（scope=wxid_1, clientId=test）：: -2',
+      errorCode: -2,
+    }),
+    coordinator: {
+      async reconcileActiveTurn() {
+        return null;
+      },
+      async handleInboundEvent() {
+        return completeResponse('自动化执行完成。');
+      },
+    },
+  });
+
+  const before = Date.now();
+  await runtime.runAutomationSweep();
+  await runtime.waitForIdle();
+
+  assert.equal(completedCalls.length, 0);
+  assert.equal(deferredCalls.length, 1);
+  assert.equal(deferredCalls[0]?.id, 'auto-rate-limit-1');
+  assert.equal((deferredCalls[0]?.nextRunAt ?? 0) >= before + (10 * 60 * 1000), true);
+});
+
 test('WeixinBridgeRuntime defers due automation jobs when the scope is busy', async () => {
   const deferredCalls: Array<{ id: string; nextRunAt: number }> = [];
   const job = {

@@ -45,6 +45,7 @@ import type {
 const TYPING_START = 1;
 const TYPING_STOP = 2;
 const WEIXIN_SEND_MESSAGE_TIMEOUT_MS = 30_000;
+const WEIXIN_RATE_LIMIT_RETRY_STEP_MS = 5_000;
 
 interface WeixinScope {
   chatType: 'group' | 'dm';
@@ -513,6 +514,13 @@ export class WeixinPlatformPlugin implements Pick<PlatformPluginContract, 'id' |
           attempt,
           error: error instanceof Error ? (error.stack || error.message) : String(error),
         });
+        const errorCode = extractWeixinErrorCode(error);
+        if (errorCode === -2 && attempt < maxAttempts) {
+          await this.sleepImpl(Math.max(
+            this.chunkIntervalMs,
+            attempt * WEIXIN_RATE_LIMIT_RETRY_STEP_MS,
+          ));
+        }
       }
     }
     return {

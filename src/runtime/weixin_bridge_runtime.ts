@@ -40,6 +40,12 @@ interface RuntimeResponse {
     systemAction?: {
       kind?: string | null;
     } | null;
+    runtimeDelivery?: {
+      mode?: string | null;
+      delivered?: boolean | null;
+      rateLimited?: boolean | null;
+      error?: string | null;
+    } | null;
   } | null;
 }
 
@@ -109,6 +115,9 @@ interface FinalDelivery {
   mode: string;
   finalText: string;
   sentContent: string;
+  delivered: boolean;
+  rateLimited: boolean;
+  error: string | null;
 }
 
 interface PendingInboundMerge {
@@ -145,6 +154,7 @@ export class WeixinBridgeRuntime {
   static readonly NOTICE_COOLDOWN_MS = 30_000;
   static readonly DEFAULT_TYPING_KEEPALIVE_MS = 8_000;
   static readonly PREVIEW_MIN_TARGET_BYTES = 500;
+  static readonly AUTOMATION_RATE_LIMIT_RETRY_MS = 10 * 60 * 1000;
 
   platformPlugin: PlatformPluginLike;
 
@@ -557,18 +567,45 @@ export class WeixinBridgeRuntime {
         && (codexTurnMeta?.outputState ?? 'complete') === 'complete';
       if (hasCompleteMediaOnlyFinal) {
         await this.stopPreviewStreaming(streamState);
+        const finalDelivery: FinalDelivery = {
+          source: codexTurnMeta?.finalSource ?? 'thread_items_media',
+          mode: 'media_only_complete',
+          finalText: '',
+          sentContent: '',
+          delivered: true,
+          rateLimited: false,
+          error: null,
+        };
+        response.meta = {
+          ...(response.meta ?? {}),
+          runtimeDelivery: {
+            mode: finalDelivery.mode,
+            delivered: finalDelivery.delivered,
+            rateLimited: finalDelivery.rateLimited,
+            error: finalDelivery.error,
+          },
+        };
         debugRuntime('final_delivery_decision', {
           scopeId: event.externalScopeId,
           outputState: codexTurnMeta?.outputState ?? null,
-          finalSource: codexTurnMeta?.finalSource ?? 'thread_items_media',
+          finalSource: finalDelivery.source,
           finalText: '',
           streamedPreview: truncateDebugText(streamState.streamedText),
           previewChunkCount: streamState.sentChunkCount,
-          completionMode: 'media_only_final',
-          deliveryContent: '',
+          completionMode: finalDelivery.mode,
+          deliveryContent: finalDelivery.sentContent,
         });
       } else if (hasComparableFinalText || codexTurnMeta) {
         const finalDelivery = await this.ensureFinalDelivered(event, streamState, response, codexTurnMeta);
+        response.meta = {
+          ...(response.meta ?? {}),
+          runtimeDelivery: {
+            mode: finalDelivery.mode,
+            delivered: finalDelivery.delivered,
+            rateLimited: finalDelivery.rateLimited,
+            error: finalDelivery.error,
+          },
+        };
         debugRuntime('final_delivery_decision', {
           scopeId: event.externalScopeId,
           outputState: codexTurnMeta?.outputState ?? null,
@@ -791,6 +828,9 @@ export class WeixinBridgeRuntime {
             mode: 'partial_preview_commit',
             finalText,
             sentContent: delivery.deliveredText || commitContent,
+            delivered: true,
+            rateLimited: false,
+            error: null,
           };
         }
       }
@@ -813,6 +853,7 @@ export class WeixinBridgeRuntime {
           this.isRateLimitedDeliveryFailure(failureDelivery)
           || this.isRateLimitedDeliveryFailure(partialCommitDelivery)
         )
+        && !this.isAutomationEvent(event)
       ) {
         await this.ensureScopeNoticeDelivered(
           event.externalScopeId,
@@ -835,6 +876,10 @@ export class WeixinBridgeRuntime {
         mode: failureMode,
         finalText: '',
         sentContent: failureDelivery.deliveredText || failureMessage,
+        delivered: failureDelivery.success,
+        rateLimited: this.isRateLimitedDeliveryFailure(failureDelivery)
+          || this.isRateLimitedDeliveryFailure(partialCommitDelivery),
+        error: failureDelivery.error || null,
       };
     }
     if (!normalizedFinal) {
@@ -844,6 +889,9 @@ export class WeixinBridgeRuntime {
           mode: 'media_only_complete',
           finalText: '',
           sentContent: '',
+          delivered: true,
+          rateLimited: false,
+          error: null,
         };
       }
       throw new Error(this.i18n.t('runtime.error.finalTextMissing', { scopeId: event.externalScopeId }));
@@ -851,13 +899,16 @@ export class WeixinBridgeRuntime {
 
     const previewText = isComparablePrefix(streamState.streamedText, finalText) ? streamState.streamedText : '';
     if (normalizeComparableText(previewText) === normalizedFinal) {
-      return {
-        source: codexTurnMeta?.finalSource ?? 'thread_items',
-        mode: 'preview_already_complete',
-        finalText,
-        sentContent: '',
-      };
-    }
+        return {
+          source: codexTurnMeta?.finalSource ?? 'thread_items',
+          mode: 'preview_already_complete',
+          finalText,
+          sentContent: '',
+          delivered: true,
+          rateLimited: false,
+          error: null,
+        };
+      }
 
     let lastAttemptedContent = '';
     let lastFailedDelivery: DeliveryResult | null = null;
@@ -869,6 +920,9 @@ export class WeixinBridgeRuntime {
           mode: attempt === 1 ? 'preview_already_complete' : 'final_resumed_complete',
           finalText,
           sentContent: '',
+          delivered: true,
+          rateLimited: false,
+          error: null,
         };
       }
       lastAttemptedContent = commitContent;
@@ -887,6 +941,9 @@ export class WeixinBridgeRuntime {
           mode: commitContent === finalText ? 'full_final_commit' : 'tail_final_commit',
           finalText,
           sentContent: delivery.deliveredText || commitContent,
+          delivered: true,
+          rateLimited: false,
+          error: null,
         };
       }
       lastFailedDelivery = delivery;
@@ -899,7 +956,7 @@ export class WeixinBridgeRuntime {
       });
     }
 
-    if (this.isRateLimitedDeliveryFailure(lastFailedDelivery)) {
+    if (this.isRateLimitedDeliveryFailure(lastFailedDelivery) && !this.isAutomationEvent(event)) {
       await this.ensureScopeNoticeDelivered(
         event.externalScopeId,
         this.i18n.t('runtime.error.weixinRateLimitedNotice'),
@@ -911,6 +968,9 @@ export class WeixinBridgeRuntime {
       mode: 'final_delivery_incomplete',
       finalText,
       sentContent: lastAttemptedContent,
+      delivered: false,
+      rateLimited: this.isRateLimitedDeliveryFailure(lastFailedDelivery),
+      error: lastFailedDelivery?.error || null,
     };
   }
 
@@ -1531,13 +1591,24 @@ export class WeixinBridgeRuntime {
           bridgeSessionId: reboundBridgeSessionId,
         });
       }
+      const deliveryMeta = response?.meta?.runtimeDelivery ?? null;
+      if (deliveryMeta?.delivered === false && deliveryMeta?.rateLimited) {
+        this.automationJobs?.deferJob?.(
+          job.id,
+          Date.now() + WeixinBridgeRuntime.AUTOMATION_RATE_LIMIT_RETRY_MS,
+        );
+        return response;
+      }
       const liveJob = this.automationJobs?.getById?.(job.id) ?? job;
-      const preview = liveJob?.lastResultPreview ?? buildAutomationResultPreview(response);
-      const error = liveJob?.lastError ?? null;
+      const preview = buildAutomationResultPreview(response) || liveJob?.lastResultPreview || null;
+      const delivered = deliveryMeta?.delivered !== false;
+      const error = delivered
+        ? null
+        : String(deliveryMeta?.error ?? liveJob?.lastError ?? this.i18n.t('runtime.error.unknownDeliveryFailure')).trim();
       this.automationJobs?.completeJob?.(job.id, {
         resultPreview: preview,
         error,
-        deliveredAt: Date.now(),
+        deliveredAt: delivered ? Date.now() : null,
       });
       return response;
     } catch (error) {
@@ -1636,6 +1707,12 @@ export class WeixinBridgeRuntime {
       return false;
     }
     return (Date.now() - recent.sentAt) < WeixinBridgeRuntime.NOTICE_COOLDOWN_MS;
+  }
+
+  isAutomationEvent(event: InboundTextEvent): boolean {
+    const metadata = event?.metadata as { codexbridge?: { automationJobId?: unknown } } | undefined;
+    return typeof metadata?.codexbridge?.automationJobId === 'string'
+      && metadata.codexbridge.automationJobId.trim().length > 0;
   }
 
   noteScopeNoticeDelivered(scopeId: string, content: string): void {

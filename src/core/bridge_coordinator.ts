@@ -11441,7 +11441,7 @@ export class BridgeCoordinator {
     const scopeRef = toScopeRef(event);
     const providerProfile = this.requireProviderProfile(session.providerProfileId);
     const providerPlugin = this.providerRegistry.getProvider(providerProfile.providerKind);
-    const sessionSettings = this.bridgeSessions.getSessionSettings(session.id);
+    let sessionSettings = this.bridgeSessions.getSessionSettings(session.id);
     const turnArtifactContext = createTurnArtifactContext({
       bridgeSessionId: session.id,
       cwd: normalizeCwd(session.cwd) ?? this.resolveEventCwd(event),
@@ -11475,56 +11475,102 @@ export class BridgeCoordinator {
         }
         : null,
     });
-    const result = await providerPlugin.startTurn({
-      providerProfile,
-      bridgeSession: session,
-      sessionSettings,
-      event: turnEvent,
-      inputText: event.text,
-      onProgress: options.onProgress ?? null,
-      onTurnStarted: async (meta: { turnId?: string | null; threadId?: string | null } = {}) => {
-        debugCoordinator('turn_started', {
-          platform: scopeRef.platform,
-          scopeId: scopeRef.externalScopeId,
-          bridgeSessionId: session.id,
-          providerProfileId: session.providerProfileId,
-          threadId: meta.threadId ?? session.codexThreadId,
-          turnId: meta.turnId ?? null,
-        });
-        if (turnArtifactContext) {
-          turnArtifactContext.turnId = meta.turnId ?? null;
-        }
-        const active = this.activeTurns?.updateScopeTurn(scopeRef, {
-          bridgeSessionId: session.id,
-          providerProfileId: session.providerProfileId,
-          threadId: meta.threadId ?? session.codexThreadId,
-          turnId: meta.turnId ?? null,
-          artifactDelivery: pendingArtifactDelivery
-            ? {
-              ...pendingArtifactDelivery,
+    let attemptedModelReset = false;
+    let attemptedWorkspaceReconnect = false;
+    let result;
+    while (true) {
+      try {
+        result = await providerPlugin.startTurn({
+          providerProfile,
+          bridgeSession: session,
+          sessionSettings,
+          event: turnEvent,
+          inputText: event.text,
+          onProgress: options.onProgress ?? null,
+          onTurnStarted: async (meta: { turnId?: string | null; threadId?: string | null } = {}) => {
+            debugCoordinator('turn_started', {
+              platform: scopeRef.platform,
+              scopeId: scopeRef.externalScopeId,
+              bridgeSessionId: session.id,
+              providerProfileId: session.providerProfileId,
+              threadId: meta.threadId ?? session.codexThreadId,
               turnId: meta.turnId ?? null,
+            });
+            if (turnArtifactContext) {
+              turnArtifactContext.turnId = meta.turnId ?? null;
             }
-            : null,
-        }) ?? null;
-        if (typeof options.onTurnStarted === 'function') {
-          await options.onTurnStarted({
-            turnId: meta.turnId ?? null,
-            threadId: meta.threadId ?? session.codexThreadId,
-            bridgeSessionId: session.id,
-            providerProfileId: session.providerProfileId,
-          });
+            const active = this.activeTurns?.updateScopeTurn(scopeRef, {
+              bridgeSessionId: session.id,
+              providerProfileId: session.providerProfileId,
+              threadId: meta.threadId ?? session.codexThreadId,
+              turnId: meta.turnId ?? null,
+              artifactDelivery: pendingArtifactDelivery
+                ? {
+                  ...pendingArtifactDelivery,
+                  turnId: meta.turnId ?? null,
+                }
+                : null,
+            }) ?? null;
+            if (typeof options.onTurnStarted === 'function') {
+              await options.onTurnStarted({
+                turnId: meta.turnId ?? null,
+                threadId: meta.threadId ?? session.codexThreadId,
+                bridgeSessionId: session.id,
+                providerProfileId: session.providerProfileId,
+              });
+            }
+            if (active?.interruptRequested && active.turnId && !active.interruptDispatched) {
+              await this.dispatchInterruptForActiveTurn(active);
+            }
+          },
+          onApprovalRequest: async (request: ProviderApprovalRequest) => {
+            this.activeTurns?.addPendingApproval(scopeRef, request);
+            if (typeof options.onApprovalRequest === 'function') {
+              await options.onApprovalRequest(request);
+            }
+          },
+        });
+      } catch (error) {
+        const failureMessage = formatUserError(error);
+        if (
+          !attemptedModelReset
+          && this.maybeResetUnsupportedCodexModel(session, sessionSettings, failureMessage)
+        ) {
+          attemptedModelReset = true;
+          sessionSettings = this.bridgeSessions.getSessionSettings(session.id);
+          continue;
         }
-        if (active?.interruptRequested && active.turnId && !active.interruptDispatched) {
-          await this.dispatchInterruptForActiveTurn(active);
+        if (
+          !attemptedWorkspaceReconnect
+          && await this.maybeReconnectInvalidCodexWorkspace(providerProfile, providerPlugin, failureMessage)
+        ) {
+          attemptedWorkspaceReconnect = true;
+          sessionSettings = this.bridgeSessions.getSessionSettings(session.id);
+          continue;
         }
-      },
-      onApprovalRequest: async (request: ProviderApprovalRequest) => {
-        this.activeTurns?.addPendingApproval(scopeRef, request);
-        if (typeof options.onApprovalRequest === 'function') {
-          await options.onApprovalRequest(request);
+        throw error;
+      }
+      const providerErrorMessage = typeof result?.errorMessage === 'string' ? result.errorMessage.trim() : '';
+      if (result?.outputState === 'provider_error' && providerErrorMessage) {
+        if (
+          !attemptedModelReset
+          && this.maybeResetUnsupportedCodexModel(session, sessionSettings, providerErrorMessage)
+        ) {
+          attemptedModelReset = true;
+          sessionSettings = this.bridgeSessions.getSessionSettings(session.id);
+          continue;
         }
-      },
-    });
+        if (
+          !attemptedWorkspaceReconnect
+          && await this.maybeReconnectInvalidCodexWorkspace(providerProfile, providerPlugin, providerErrorMessage)
+        ) {
+          attemptedWorkspaceReconnect = true;
+          sessionSettings = this.bridgeSessions.getSessionSettings(session.id);
+          continue;
+        }
+      }
+      break;
+    }
     const finalizedResult = finalizeTurnArtifacts({
       result,
       context: turnArtifactContext,
@@ -11579,6 +11625,43 @@ export class BridgeCoordinator {
       this.clearStopCheckpoint(session.id);
     }
     return { result: finalizedResult, session: nextSession };
+  }
+
+  maybeResetUnsupportedCodexModel(session, sessionSettings, failureMessage: string): boolean {
+    if (!isUnsupportedChatgptAccountModelError(failureMessage) || !sessionSettings?.model) {
+      return false;
+    }
+    debugCoordinator('turn_recovery_reset_unsupported_model', {
+      bridgeSessionId: session.id,
+      threadId: session.codexThreadId,
+      providerProfileId: session.providerProfileId,
+      previousModel: sessionSettings.model,
+      errorMessage: failureMessage,
+    });
+    this.bridgeSessions.upsertSessionSettings(session.id, {
+      model: null,
+    });
+    return true;
+  }
+
+  async maybeReconnectInvalidCodexWorkspace(providerProfile, providerPlugin, failureMessage: string): Promise<boolean> {
+    if (!isInvalidWorkspaceSelectedError(failureMessage)) {
+      return false;
+    }
+    debugCoordinator('turn_recovery_reconnect_invalid_workspace', {
+      providerProfileId: providerProfile.id,
+      providerKind: providerProfile.providerKind,
+      errorMessage: failureMessage,
+    });
+    try {
+      const reconnectResult = await this.codexNativeRuntime.reconnectProfile({
+        providerProfile,
+        providerPlugin,
+      });
+      return Boolean(reconnectResult?.connected);
+    } catch {
+      return false;
+    }
   }
 
   async dispatchInterruptForActiveTurn(activeTurn) {
@@ -20589,6 +20672,16 @@ function isResumeRetryableError(error) {
     || /no rollout found/i.test(message);
 }
 
+function isUnsupportedChatgptAccountModelError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not supported when using codex with a chatgpt account/i.test(message);
+}
+
+function isInvalidWorkspaceSelectedError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /invalid_workspace_selected/i.test(message);
+}
+
 function shouldAutoRebindAfterRecoveryFailure(error) {
   return isStaleThreadError(error) || isResumeRetryableError(error);
 }
@@ -20642,6 +20735,18 @@ function classifyTurnFailure(error, i18n: Translator) {
     return {
       outputState: 'stale_session',
       errorMessage: message,
+    };
+  }
+  if (isInvalidWorkspaceSelectedError(message)) {
+    return {
+      outputState: 'provider_error',
+      errorMessage: i18n.t('runtime.error.invalidWorkspaceSelected'),
+    };
+  }
+  if (isUnsupportedChatgptAccountModelError(message)) {
+    return {
+      outputState: 'provider_error',
+      errorMessage: i18n.t('runtime.error.unsupportedChatgptModel'),
     };
   }
   if (isApprovedExecutionStallError(error)) {

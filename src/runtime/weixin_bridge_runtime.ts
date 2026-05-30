@@ -815,6 +815,9 @@ export class WeixinBridgeRuntime {
             mode: 'partial_preview_already_sent',
             finalText,
             sentContent: '',
+            delivered: true,
+            rateLimited: false,
+            error: null,
           };
         }
         const delivery = await this.sendTextWithRetry({

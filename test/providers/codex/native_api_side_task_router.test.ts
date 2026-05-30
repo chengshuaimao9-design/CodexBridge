@@ -315,3 +315,70 @@ test('CodexNativeApiSideTaskRouter keeps non-native provider profiles on direct 
   assert.equal(execution.route, 'direct_native');
   assert.equal(fetchCalls, 0);
 });
+
+test('CodexNativeApiSideTaskRouter reconnects and retries direct native execution after invalid_workspace_selected', async () => {
+  const reconnectCalls: Array<{ providerProfileId: string; providerKind: string }> = [];
+  const runtime = new CodexNativeRuntime({
+    now: () => 555,
+    createSessionId: () => 'session-direct-native-retry-1',
+  });
+  const providerPlugin = {
+    async reconnectProfile({ providerProfile }: any) {
+      reconnectCalls.push({
+        providerProfileId: providerProfile.id,
+        providerKind: providerProfile.providerKind,
+      });
+      return {
+        connected: true,
+        accountIdentity: null,
+      };
+    },
+    async startThread(params: any) {
+      return {
+        threadId: 'thread-direct-native-retry-1',
+        cwd: params.cwd,
+        title: params.title,
+      };
+    },
+    async startTurn(params: any) {
+      if (reconnectCalls.length === 0) {
+        throw new Error('unexpected status 403 Forbidden: {"detail":{"code":"invalid_workspace_selected"}}');
+      }
+      return {
+        outputText: 'direct native reply after reconnect',
+        previewText: '',
+        threadId: params.bridgeSession.codexThreadId,
+        turnId: 'turn-direct-native-retry-1',
+      };
+    },
+  } as any;
+  const router = new CodexNativeApiSideTaskRouter({
+    runtime,
+    baseUrl: 'http://127.0.0.1:43182',
+    fetchImpl: async () => {
+      throw new TypeError('fetch failed');
+    },
+  });
+
+  const execution = await router.execute({
+    taskClass: 'normalization',
+    providerProfile: makeProfile(),
+    providerPlugin,
+    cwd: '/repo',
+    title: 'Automation Command Skill',
+    sessionMetadata: {
+      sourcePlatform: 'weixin',
+      source: 'automation-command-skill',
+    },
+    inputText: 'Normalize this draft.',
+    locale: 'zh-CN',
+    event: makeEvent(),
+  });
+
+  assert.equal(execution.route, 'direct_native');
+  assert.equal(execution.result.outputText, 'direct native reply after reconnect');
+  assert.deepEqual(reconnectCalls, [{
+    providerProfileId: 'openai-default',
+    providerKind: 'openai-native',
+  }]);
+});

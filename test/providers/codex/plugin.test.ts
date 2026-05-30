@@ -49,8 +49,8 @@ function makeSessionSettings(overrides = {}) {
   };
 }
 
-function makePlugin(clientFactory: any) {
-  return new CodexProviderPlugin({ clientFactory: clientFactory as any });
+function makePlugin(clientFactory: any, overrides: Record<string, unknown> = {}) {
+  return new CodexProviderPlugin({ clientFactory: clientFactory as any, ...overrides });
 }
 
 function makePluginWithReviewRunner(clientFactory: any, reviewRunner: any) {
@@ -435,29 +435,43 @@ test('CodexProviderPlugin forwards plan collaboration mode into startTurn', asyn
 
 test('CodexProviderPlugin startReview runs native review through the injected review runner without rebinding a chat thread', async () => {
   const reviewCalls: any[] = [];
-  const plugin = makePluginWithReviewRunner(() => ({
-    async start() {},
-  }), {
-    async start(params: any) {
-      reviewCalls.push(params);
-      await params.onTurnStarted?.({
-        threadId: 'codex-review-cli-1',
-        turnId: 'codex-review-cli-1-turn-1',
-      });
-      return {
-        outputText: 'review findings',
-        outputState: 'complete',
-        threadId: 'codex-review-cli-1',
-        turnId: 'codex-review-cli-1-turn-1',
-        finalSource: 'codex_review_cli',
-      };
-    },
-    readThread() {
-      return null;
-    },
-    async interrupt() {
-      return false;
-    },
+  const plugin = new CodexProviderPlugin({
+    clientFactory: (() => ({
+      async start() {},
+    })) as any,
+    readAuthState: () => ({
+      authPath: '/tmp/auth.json',
+      identity: {
+        authMode: 'api',
+        accountId: 'acc_api',
+        email: 'api@example.com',
+      },
+      tokens: {
+        accountId: 'acc_api',
+      },
+    }) as any,
+    reviewRunner: {
+      async start(params: any) {
+        reviewCalls.push(params);
+        await params.onTurnStarted?.({
+          threadId: 'codex-review-cli-1',
+          turnId: 'codex-review-cli-1-turn-1',
+        });
+        return {
+          outputText: 'review findings',
+          outputState: 'complete',
+          threadId: 'codex-review-cli-1',
+          turnId: 'codex-review-cli-1-turn-1',
+          finalSource: 'codex_review_cli',
+        };
+      },
+      readThread() {
+        return null;
+      },
+      async interrupt() {
+        return false;
+      },
+    } as any,
   });
 
   const result = await plugin.startReview({
@@ -1118,6 +1132,346 @@ test('CodexProviderPlugin resolves default model metadata from listModels when p
   ]);
 });
 
+test('CodexProviderPlugin ignores unsupported ChatGPT-only model overrides and falls back to gpt-5.5', async () => {
+  const calls = [];
+  const plugin = makePlugin(() => ({
+    async start() {},
+    async startThread(params: any) {
+      calls.push(['startThread', params.model]);
+      return {
+        threadId: 'thread-chatgpt-default-1',
+        cwd: params.cwd ?? null,
+        title: params.title ?? null,
+      };
+    },
+    async readThread(threadId: string) {
+      return { threadId, title: null, cwd: null };
+    },
+    async listThreads() {
+      return { items: [], nextCursor: null };
+    },
+    async startTurn(params: any) {
+      calls.push(['startTurn', params.model]);
+      return {
+        outputText: 'done',
+        threadId: params.threadId,
+        title: null,
+      };
+    },
+    async interruptTurn() {},
+    async listModels() {
+      return [
+        {
+          id: 'gpt-5.5',
+          model: 'gpt-5.5',
+          displayName: 'GPT-5.5',
+          description: '',
+          isDefault: true,
+          supportedReasoningEfforts: ['medium'],
+          defaultReasoningEffort: 'medium',
+        },
+        {
+          id: 'gpt-5.4',
+          model: 'gpt-5.4',
+          displayName: 'GPT-5.4',
+          description: '',
+          isDefault: false,
+          supportedReasoningEfforts: ['medium'],
+          defaultReasoningEffort: 'medium',
+        },
+      ];
+    },
+  }), {
+    readAuthState: () => ({
+      authPath: '/tmp/auth.json',
+      identity: {
+        authMode: 'chatgpt',
+        accountId: 'acc_chatgpt',
+        email: 'chatgpt@example.com',
+      },
+      tokens: {
+        refreshToken: 'refresh-token',
+        accountId: 'acc_chatgpt',
+      },
+    }),
+  });
+  const profile = makeProfile({ defaultModel: 'gpt-5.3-codex' });
+
+  const started = await plugin.startThread({
+    providerProfile: profile,
+    cwd: '/tmp/work',
+  });
+  await plugin.startTurn({
+    providerProfile: profile,
+    bridgeSession: makeBridgeSession({
+      codexThreadId: started.threadId,
+    }),
+    sessionSettings: makeSessionSettings({
+      model: 'gpt-5.3-codex',
+    }),
+    event: {
+      platform: 'weixin',
+      externalScopeId: 'wxid_1',
+      text: 'hello',
+    },
+    inputText: 'hello',
+  });
+
+  assert.deepEqual(calls, [
+    ['startThread', 'gpt-5.5'],
+    ['startTurn', 'gpt-5.5'],
+  ]);
+});
+
+test('CodexProviderPlugin ignores unsupported gpt-5.4 entries from model/list for ChatGPT auth and falls back to the first supported model', async () => {
+  const calls = [];
+  const plugin = makePlugin(() => ({
+    async start() {},
+    async startThread(params: any) {
+      calls.push(['startThread', params.model]);
+      return {
+        threadId: 'thread-chatgpt-list-fallback-1',
+        cwd: params.cwd ?? null,
+        title: params.title ?? null,
+      };
+    },
+    async readThread(threadId: string) {
+      return { threadId, title: null, cwd: null };
+    },
+    async listThreads() {
+      return { items: [], nextCursor: null };
+    },
+    async startTurn(params: any) {
+      calls.push(['startTurn', params.model]);
+      return {
+        outputText: 'done',
+        threadId: params.threadId,
+        title: null,
+      };
+    },
+    async interruptTurn() {},
+    async listModels() {
+      return [
+        {
+          id: 'gpt-5.4',
+          model: 'gpt-5.4',
+          displayName: 'GPT-5.4',
+          description: '',
+          isDefault: true,
+          supportedReasoningEfforts: ['medium'],
+          defaultReasoningEffort: 'medium',
+        },
+        {
+          id: 'gpt-5.5',
+          model: 'gpt-5.5',
+          displayName: 'GPT-5.5',
+          description: '',
+          isDefault: false,
+          supportedReasoningEfforts: ['medium'],
+          defaultReasoningEffort: 'medium',
+        },
+      ];
+    },
+  }), {
+    readAuthState: () => ({
+      authPath: '/tmp/auth.json',
+      identity: {
+        authMode: 'chatgpt',
+        accountId: 'acc_chatgpt',
+        email: 'chatgpt@example.com',
+      },
+      tokens: {
+        refreshToken: 'refresh-token',
+        accountId: 'acc_chatgpt',
+      },
+    }),
+  });
+
+  const started = await plugin.startThread({
+    providerProfile: makeProfile(),
+    cwd: '/tmp/work',
+  });
+  await plugin.startTurn({
+    providerProfile: makeProfile(),
+    bridgeSession: makeBridgeSession({
+      codexThreadId: started.threadId,
+    }),
+    sessionSettings: makeSessionSettings(),
+    event: {
+      platform: 'weixin',
+      externalScopeId: 'wxid_1',
+      text: 'hello',
+    },
+    inputText: 'hello',
+  });
+
+  assert.deepEqual(calls, [
+    ['startThread', 'gpt-5.5'],
+    ['startTurn', 'gpt-5.5'],
+  ]);
+});
+
+test('CodexProviderPlugin prefers gpt-5.5 over other supported ChatGPT models when no explicit model is selected', async () => {
+  const calls = [];
+  const plugin = makePlugin(() => ({
+    async start() {},
+    async startThread(params: any) {
+      calls.push(['startThread', params.model]);
+      return {
+        threadId: 'thread-chatgpt-preferred-1',
+        cwd: params.cwd ?? null,
+        title: params.title ?? null,
+      };
+    },
+    async readThread(threadId: string) {
+      return { threadId, title: null, cwd: null };
+    },
+    async listThreads() {
+      return { items: [], nextCursor: null };
+    },
+    async startTurn(params: any) {
+      calls.push(['startTurn', params.model]);
+      return {
+        outputText: 'done',
+        threadId: params.threadId,
+        title: null,
+      };
+    },
+    async interruptTurn() {},
+    async listModels() {
+      return [
+        {
+          id: 'gpt-5.4-mini',
+          model: 'gpt-5.4-mini',
+          displayName: 'GPT-5.4-Mini',
+          description: '',
+          isDefault: true,
+          supportedReasoningEfforts: ['medium'],
+          defaultReasoningEffort: 'medium',
+        },
+        {
+          id: 'gpt-5.5',
+          model: 'gpt-5.5',
+          displayName: 'GPT-5.5',
+          description: '',
+          isDefault: false,
+          supportedReasoningEfforts: ['medium'],
+          defaultReasoningEffort: 'medium',
+        },
+      ];
+    },
+  }), {
+    readAuthState: () => ({
+      authPath: '/tmp/auth.json',
+      identity: {
+        authMode: 'chatgpt',
+        accountId: 'acc_chatgpt',
+        email: 'chatgpt@example.com',
+      },
+      tokens: {
+        refreshToken: 'refresh-token',
+        accountId: 'acc_chatgpt',
+      },
+    }),
+  });
+
+  const started = await plugin.startThread({
+    providerProfile: makeProfile(),
+    cwd: '/tmp/work',
+  });
+  await plugin.startTurn({
+    providerProfile: makeProfile(),
+    bridgeSession: makeBridgeSession({
+      codexThreadId: started.threadId,
+    }),
+    sessionSettings: makeSessionSettings(),
+    event: {
+      platform: 'weixin',
+      externalScopeId: 'wxid_1',
+      text: 'hello',
+    },
+    inputText: 'hello',
+  });
+
+  assert.deepEqual(calls, [
+    ['startThread', 'gpt-5.5'],
+    ['startTurn', 'gpt-5.5'],
+  ]);
+});
+
+test('CodexProviderPlugin prefers gpt-5.4-mini for automation jobs under ChatGPT auth when no explicit model is selected', async () => {
+  const calls = [];
+  const plugin = makePlugin(() => ({
+    async start() {},
+    async startTurn(params: any) {
+      calls.push(['startTurn', params.model]);
+      return {
+        outputText: 'done',
+        threadId: params.threadId,
+        title: null,
+      };
+    },
+    async listModels() {
+      return [
+        {
+          id: 'gpt-5.5',
+          model: 'gpt-5.5',
+          displayName: 'GPT-5.5',
+          description: '',
+          isDefault: true,
+          supportedReasoningEfforts: ['medium'],
+          defaultReasoningEffort: 'medium',
+        },
+        {
+          id: 'gpt-5.4-mini',
+          model: 'gpt-5.4-mini',
+          displayName: 'GPT-5.4-Mini',
+          description: '',
+          isDefault: false,
+          supportedReasoningEfforts: ['medium'],
+          defaultReasoningEffort: 'medium',
+        },
+      ];
+    },
+  }), {
+    readAuthState: () => ({
+      authPath: '/tmp/auth.json',
+      identity: {
+        authMode: 'chatgpt',
+        accountId: 'acc_chatgpt',
+        email: 'chatgpt@example.com',
+      },
+      tokens: {
+        refreshToken: 'refresh-token',
+        accountId: 'acc_chatgpt',
+      },
+    }),
+  });
+
+  await plugin.startTurn({
+    providerProfile: makeProfile(),
+    bridgeSession: makeBridgeSession({
+      codexThreadId: 'thread-automation-1',
+    }),
+    sessionSettings: makeSessionSettings(),
+    event: {
+      platform: 'weixin',
+      externalScopeId: 'wxid_1',
+      text: 'hello',
+      metadata: {
+        codexbridge: {
+          automationJobId: 'job-1',
+        },
+      },
+    },
+    inputText: 'hello',
+  });
+
+  assert.deepEqual(calls, [
+    ['startTurn', 'gpt-5.4-mini'],
+  ]);
+});
+
 test('CodexProviderPlugin forwards onTurnStarted to the app client and returns the turn id', async () => {
   const plugin = makePlugin(() => ({
       async start() {},
@@ -1323,6 +1677,126 @@ test('CodexProviderPlugin reconnectProfile replaces the existing client instance
     ['client-2', 'start'],
   ]);
   assert.equal(turn.outputText, 'client-2-done');
+});
+
+test('CodexProviderPlugin reconnectProfile refreshes ChatGPT auth before replacing the client', async () => {
+  const lifecycle = [];
+  const calls: any[] = [];
+  let clientIndex = 0;
+  const plugin = makePlugin(() => {
+    clientIndex += 1;
+    const name = `client-${clientIndex}`;
+    let connected = false;
+    return {
+      async start() {
+        connected = true;
+        lifecycle.push([name, 'start']);
+      },
+      async stop() {
+        connected = false;
+        lifecycle.push([name, 'stop']);
+      },
+      isConnected() {
+        return connected;
+      },
+      async startThread() {
+        return {
+          threadId: `${name}-thread`,
+          cwd: '/tmp/work',
+          title: null,
+        };
+      },
+      async readThread(threadId: string) {
+        return { threadId, cwd: '/tmp/work', title: null };
+      },
+      async listThreads() {
+        return { items: [], nextCursor: null };
+      },
+      async startTurn(params: any) {
+        return {
+          outputText: `${name}-done`,
+          outputState: 'complete',
+          threadId: params.threadId,
+          title: null,
+        };
+      },
+      async interruptTurn() {},
+      async listModels() {
+        return [{
+          id: 'gpt-5.5',
+          model: 'gpt-5.5',
+          displayName: 'GPT-5.5',
+          description: '',
+          isDefault: true,
+          supportedReasoningEfforts: ['medium'],
+          defaultReasoningEffort: 'medium',
+        }];
+      },
+      async resumeThread() {
+        return {};
+      },
+    };
+  }, {
+    now: () => 123456,
+    readAuthState: () => ({
+      authPath: '/tmp/auth.json',
+      raw: { auth_mode: 'chatgpt' },
+      tokens: {
+        accessToken: 'old-access',
+        idToken: 'old-id',
+        refreshToken: 'refresh-token',
+        accountId: 'old-account',
+        lastRefresh: null,
+      },
+      identity: {
+        email: 'before@example.com',
+        name: null,
+        authMode: 'chatgpt',
+        accountId: 'old-account',
+        plan: 'plus',
+        authPath: '/tmp/auth.json',
+      },
+    }),
+    refreshTokens: async ({ refreshToken }: any) => {
+      calls.push(['refreshTokens', refreshToken]);
+      return {
+        accessToken: 'new-access',
+        refreshToken: 'new-refresh',
+        idToken: 'new-id',
+        expiresAt: null,
+        tokenType: null,
+        scope: null,
+      };
+    },
+    writeAuthFile: async (payload: any) => {
+      calls.push(['writeAuthFile', payload]);
+      return payload.authPath;
+    },
+  });
+  const profile = makeProfile();
+
+  await plugin.startThread({
+    providerProfile: profile,
+    cwd: '/tmp/work',
+  });
+  const reconnect = await plugin.reconnectProfile({
+    providerProfile: profile,
+  });
+
+  assert.equal(reconnect.connected, true);
+  assert.deepEqual(lifecycle, [
+    ['client-1', 'start'],
+    ['client-1', 'stop'],
+    ['client-2', 'start'],
+  ]);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], ['refreshTokens', 'refresh-token']);
+  assert.equal(calls[1]?.[0], 'writeAuthFile');
+  assert.equal(calls[1]?.[1]?.authPath, '/tmp/auth.json');
+  assert.equal(calls[1]?.[1]?.accessToken, 'new-access');
+  assert.equal(calls[1]?.[1]?.refreshToken, 'new-refresh');
+  assert.equal(calls[1]?.[1]?.authMode, 'chatgpt');
+  assert.equal(calls[1]?.[1]?.now, 123456);
 });
 
 test('CodexProviderPlugin forwards session personality to the app client', async () => {

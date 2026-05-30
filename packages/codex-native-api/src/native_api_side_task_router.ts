@@ -168,6 +168,24 @@ export class CodexNativeApiSideTaskRouter {
   private async executeDirect(
     request: CodexNativeApiSideTaskRequest,
   ): Promise<CodexNativeApiSideTaskExecutionResult> {
+    try {
+      return await this.executeDirectOnce(request);
+    } catch (error) {
+      const reconnectRetried = await this.tryReconnectForRecoverableError(request, error);
+      if (reconnectRetried) {
+        return reconnectRetried;
+      }
+      const clearedModelRequest = this.buildRetryWithoutExplicitModel(request, error);
+      if (clearedModelRequest) {
+        return this.executeDirectOnce(clearedModelRequest);
+      }
+      throw error;
+    }
+  }
+
+  private async executeDirectOnce(
+    request: CodexNativeApiSideTaskRequest,
+  ): Promise<CodexNativeApiSideTaskExecutionResult> {
     const execution = await this.runtime.runIsolatedTurn({
       providerProfile: request.providerProfile,
       providerPlugin: request.providerPlugin,
@@ -193,6 +211,37 @@ export class CodexNativeApiSideTaskRouter {
       responseId: null,
       session: execution.session,
       result: execution.result,
+    };
+  }
+
+  private async tryReconnectForRecoverableError(
+    request: CodexNativeApiSideTaskRequest,
+    error: unknown,
+  ): Promise<CodexNativeApiSideTaskExecutionResult | null> {
+    if (!isInvalidWorkspaceSelectedError(error)) {
+      return null;
+    }
+    const reconnectResult = await this.runtime.reconnectProfile({
+      providerProfile: request.providerProfile,
+      providerPlugin: request.providerPlugin,
+      authPathOrOptions: {},
+    }).catch(() => null);
+    if (!reconnectResult?.connected) {
+      return null;
+    }
+    return this.executeDirectOnce(request);
+  }
+
+  private buildRetryWithoutExplicitModel(
+    request: CodexNativeApiSideTaskRequest,
+    error: unknown,
+  ): CodexNativeApiSideTaskRequest | null {
+    if (!isUnsupportedChatgptAccountModelError(error) || !normalizeString(request.model)) {
+      return null;
+    }
+    return {
+      ...request,
+      model: null,
     };
   }
 }
@@ -309,6 +358,16 @@ function isNativeApiFallbackError(error: unknown): boolean {
     || message.includes('ENOTFOUND')
     || message.includes('EHOSTUNREACH')
     || message.includes('ETIMEDOUT');
+}
+
+function isInvalidWorkspaceSelectedError(error: unknown): boolean {
+  return error instanceof Error
+    && error.message.includes('invalid_workspace_selected');
+}
+
+function isUnsupportedChatgptAccountModelError(error: unknown): boolean {
+  return error instanceof Error
+    && error.message.includes('not supported when using Codex with a ChatGPT account');
 }
 
 function normalizeTaskClassSet(

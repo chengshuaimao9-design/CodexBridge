@@ -1,4 +1,10 @@
 import { CodexAppClient, createStderrLogger, readCodexAccountIdentity } from './app_client.js';
+import {
+  extractCodexTokenIdentity,
+  readCodexAuthState,
+  writeCodexAuthFile,
+} from './auth_state.js';
+import { refreshOpenAITokens } from './oauth_device.js';
 import type { CodexTurnInput } from './app_client.js';
 import { CodexCliReviewRunner } from './review_runner.js';
 import { resolveReasoningEffortForProvider } from '../shared/thinking_policy.js';
@@ -51,7 +57,21 @@ type CodexProviderProfile = ProviderProfile & {
 interface CodexProviderPluginOptions {
   clientFactory?: any;
   reviewRunner?: any;
+  readAuthState?: typeof readCodexAuthState;
+  refreshTokens?: typeof refreshOpenAITokens;
+  writeAuthFile?: typeof writeCodexAuthFile;
+  now?: () => number;
 }
+
+const CHATGPT_UNSUPPORTED_CODEX_MODELS = new Set([
+  'gpt-5.4',
+  'gpt-5.3-codex',
+  'gpt-5.3-codex-spark',
+  'gpt-5.2',
+]);
+
+const CHATGPT_PREFERRED_CODEX_MODEL = 'gpt-5.5';
+const CHATGPT_AUTOMATION_PREFERRED_CODEX_MODEL = 'gpt-5.4-mini';
 
 export class CodexProviderPlugin {
   kind: string;
@@ -64,6 +84,14 @@ export class CodexProviderPlugin {
 
   reviewRunner: any;
 
+  readAuthState: typeof readCodexAuthState;
+
+  refreshTokens: typeof refreshOpenAITokens;
+
+  writeAuthFile: typeof writeCodexAuthFile;
+
+  now: () => number;
+
   constructor({
     clientFactory = (profile) => new CodexAppClient({
       codexCliBin: profile.config.cliBin,
@@ -75,12 +103,20 @@ export class CodexProviderPlugin {
       logger: createStderrLogger(),
     }),
     reviewRunner = new CodexCliReviewRunner(),
+    readAuthState = readCodexAuthState,
+    refreshTokens = refreshOpenAITokens,
+    writeAuthFile = writeCodexAuthFile,
+    now = () => Date.now(),
   }: CodexProviderPluginOptions = {}) {
     this.kind = 'codex';
     this.displayName = 'Codex Engine';
     this.clientFactory = clientFactory;
     this.clients = new Map();
     this.reviewRunner = reviewRunner;
+    this.readAuthState = readAuthState;
+    this.refreshTokens = refreshTokens;
+    this.writeAuthFile = writeAuthFile;
+    this.now = now;
   }
 
   async startThread({
@@ -236,6 +272,7 @@ export class CodexProviderPlugin {
   }: {
     providerProfile: ProviderProfile;
   }): Promise<Record<string, unknown>> {
+    await this.refreshChatgptAuthIfPossible().catch(() => false);
     const previousClient = this.clients.get(providerProfile.id) ?? null;
     if (previousClient) {
       this.clients.delete(providerProfile.id);
@@ -248,6 +285,34 @@ export class CodexProviderPlugin {
       connected: client.isConnected(),
       accountIdentity: readCodexAccountIdentity(),
     };
+  }
+
+  async refreshChatgptAuthIfPossible(): Promise<boolean> {
+    const authState = this.readAuthState();
+    if (!authState?.tokens.refreshToken || authState.identity?.authMode !== 'chatgpt') {
+      return false;
+    }
+    const refreshed = await this.refreshTokens({
+      refreshToken: authState.tokens.refreshToken,
+      now: this.now(),
+    });
+    const tokenIdentity = extractCodexTokenIdentity({
+      accessToken: refreshed.accessToken,
+      idToken: refreshed.idToken,
+      accountId: authState.tokens.accountId,
+      authMode: authState.identity.authMode,
+    });
+    await this.writeAuthFile({
+      authPath: authState.authPath,
+      accessToken: refreshed.accessToken,
+      refreshToken: refreshed.refreshToken,
+      idToken: refreshed.idToken,
+      accountId: tokenIdentity.accountId ?? authState.identity.accountId ?? authState.tokens.accountId,
+      email: tokenIdentity.email ?? authState.identity.email,
+      authMode: authState.identity.authMode,
+      now: this.now(),
+    });
+    return true;
   }
 
   async startTurn({
@@ -270,7 +335,12 @@ export class CodexProviderPlugin {
     onApprovalRequest?: ((request: ProviderApprovalRequest) => Promise<void> | void) | null;
   }): Promise<ProviderTurnResult> {
     const client = await this.ensureClient(providerProfile);
-    const modelInfo = await this.resolveModelInfo(providerProfile, client, sessionSettings?.model ?? null);
+    const modelInfo = await this.resolveModelInfo(
+      providerProfile,
+      client,
+      sessionSettings?.model ?? null,
+      this.resolveImplicitPreferredModelForEvent(event),
+    );
     const effort = this.resolveReasoningEffort(
       providerProfile,
       modelInfo,
@@ -333,7 +403,9 @@ export class CodexProviderPlugin {
     const requestedModel = sessionSettings?.model ?? null;
     const config = providerProfile.config as CodexProviderProfileConfig;
     const effort = sessionSettings?.reasoningEffort ?? null;
-    const model = requestedModel || config.defaultModel || null;
+    const model = this.sanitizeRequestedModelForCurrentAuth(requestedModel)
+      || this.sanitizeRequestedModelForCurrentAuth(config.defaultModel ?? null)
+      || null;
     return this.reviewRunner.start({
       codexCliBin: config.cliBin,
       cwd,
@@ -621,12 +693,14 @@ export class CodexProviderPlugin {
     providerProfile: ProviderProfile,
     client: any,
     requestedModel: string | null,
+    preferredModel: string | null = null,
   ): Promise<ProviderModelInfo | null> {
-    if (requestedModel) {
+    const effectiveRequestedModel = this.sanitizeRequestedModelForCurrentAuth(requestedModel);
+    if (effectiveRequestedModel) {
       return {
-        id: requestedModel,
-        model: requestedModel,
-        displayName: requestedModel,
+        id: effectiveRequestedModel,
+        model: effectiveRequestedModel,
+        displayName: effectiveRequestedModel,
         description: '',
         isDefault: false,
         supportedReasoningEfforts: [],
@@ -634,11 +708,12 @@ export class CodexProviderPlugin {
       };
     }
     const config = providerProfile.config as CodexProviderProfileConfig;
-    if (config.defaultModel) {
+    const effectiveDefaultModel = this.sanitizeRequestedModelForCurrentAuth(config.defaultModel ?? null);
+    if (effectiveDefaultModel) {
       return {
-        id: config.defaultModel,
-        model: config.defaultModel,
-        displayName: config.defaultModel,
+        id: effectiveDefaultModel,
+        model: effectiveDefaultModel,
+        displayName: effectiveDefaultModel,
         description: '',
         isDefault: false,
         supportedReasoningEfforts: [],
@@ -646,7 +721,12 @@ export class CodexProviderPlugin {
       };
     }
     const models = await client.listModels();
-    return models.find((model) => model.isDefault)
+    const compatibleModels = this.preferModelsForCurrentAuth(
+      this.filterModelsForCurrentAuth(models),
+      preferredModel,
+    );
+    return compatibleModels[0]
+      ?? models.find((model) => model.isDefault)
       ?? models[0]
       ?? null;
   }
@@ -661,6 +741,98 @@ export class CodexProviderPlugin {
       modelInfo,
       requestedEffort,
     });
+  }
+
+  sanitizeRequestedModelForCurrentAuth(requestedModel: string | null): string | null {
+    const normalizedModel = typeof requestedModel === 'string' ? requestedModel.trim() : '';
+    if (!normalizedModel) {
+      return null;
+    }
+    try {
+      const authState = this.readAuthState();
+      if (authState?.identity?.authMode === 'chatgpt' && CHATGPT_UNSUPPORTED_CODEX_MODELS.has(normalizedModel)) {
+        return null;
+      }
+    } catch {
+      return normalizedModel;
+    }
+    return normalizedModel;
+  }
+
+  filterModelsForCurrentAuth(models: ProviderModelInfo[]): ProviderModelInfo[] {
+    if (!Array.isArray(models) || models.length === 0) {
+      return [];
+    }
+    try {
+      const authState = this.readAuthState();
+      if (authState?.identity?.authMode !== 'chatgpt') {
+        return models;
+      }
+    } catch {
+      return models;
+    }
+    const filtered = models.filter((model) => {
+      const normalizedModel = typeof model?.model === 'string' ? model.model.trim() : '';
+      const normalizedId = typeof model?.id === 'string' ? model.id.trim() : '';
+      return !CHATGPT_UNSUPPORTED_CODEX_MODELS.has(normalizedModel)
+        && !CHATGPT_UNSUPPORTED_CODEX_MODELS.has(normalizedId);
+    });
+    return filtered.length > 0 ? filtered : models;
+  }
+
+  preferModelsForCurrentAuth(models: ProviderModelInfo[], preferredModel: string | null = null): ProviderModelInfo[] {
+    if (!Array.isArray(models) || models.length <= 1) {
+      return Array.isArray(models) ? models : [];
+    }
+    const normalizedPreferredModel = typeof preferredModel === 'string' ? preferredModel.trim() : '';
+    if (normalizedPreferredModel) {
+      const preferredIndex = models.findIndex((model) => {
+        const normalizedModel = typeof model?.model === 'string' ? model.model.trim() : '';
+        const normalizedId = typeof model?.id === 'string' ? model.id.trim() : '';
+        return normalizedModel === normalizedPreferredModel
+          || normalizedId === normalizedPreferredModel;
+      });
+      if (preferredIndex >= 0) {
+        const preferred = models[preferredIndex];
+        return [
+          preferred,
+          ...models.slice(0, preferredIndex),
+          ...models.slice(preferredIndex + 1),
+        ];
+      }
+    }
+    try {
+      const authState = this.readAuthState();
+      if (authState?.identity?.authMode !== 'chatgpt') {
+        return models;
+      }
+    } catch {
+      return models;
+    }
+    const preferredIndex = models.findIndex((model) => {
+      const normalizedModel = typeof model?.model === 'string' ? model.model.trim() : '';
+      const normalizedId = typeof model?.id === 'string' ? model.id.trim() : '';
+      return normalizedModel === CHATGPT_PREFERRED_CODEX_MODEL
+        || normalizedId === CHATGPT_PREFERRED_CODEX_MODEL;
+    });
+    if (preferredIndex <= 0) {
+      return models;
+    }
+    const preferred = models[preferredIndex];
+    return [
+      preferred,
+      ...models.slice(0, preferredIndex),
+      ...models.slice(preferredIndex + 1),
+    ];
+  }
+
+  resolveImplicitPreferredModelForEvent(event: InboundTextEvent | null | undefined): string | null {
+    const metadata = event?.metadata as { codexbridge?: { automationJobId?: unknown } } | undefined;
+    const automationJobId = metadata?.codexbridge?.automationJobId;
+    if (typeof automationJobId === 'string' && automationJobId.trim().length > 0) {
+      return CHATGPT_AUTOMATION_PREFERRED_CODEX_MODEL;
+    }
+    return null;
   }
 }
 

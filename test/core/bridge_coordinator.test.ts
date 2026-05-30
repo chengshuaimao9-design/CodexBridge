@@ -12935,6 +12935,96 @@ test('bridge coordinator forwards unexpected provider errors as user-visible pro
   assert.equal(result.meta?.codexTurn?.errorMessage, '401 Unauthorized: refresh_token_reused');
 });
 
+test('bridge coordinator clears an unsupported ChatGPT-account model override and retries the turn', async () => {
+  const { runtime, openai } = makeRuntime();
+  openai.models = [{
+    id: 'gpt-5.5',
+    model: 'gpt-5.5',
+    displayName: 'GPT-5.5',
+    description: '',
+    isDefault: true,
+    supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'medium',
+  }];
+  const original = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-user-unsupported-model-retry',
+    text: 'hello',
+  });
+  runtime.services.bridgeSessions.upsertSessionSettings(original.session.bridgeSessionId, {
+    model: 'gpt-5.4',
+  });
+
+  let injected = false;
+  const originalStartTurn = openai.startTurn.bind(openai);
+  openai.startTurn = async (args) => {
+    if (!injected) {
+      injected = true;
+      openai.startTurnCalls.push({
+        providerProfile: args.providerProfile,
+        bridgeSession: args.bridgeSession,
+        sessionSettings: args.sessionSettings,
+        event: args.event,
+        inputText: args.inputText,
+      });
+      return {
+        outputText: '',
+        outputArtifacts: [],
+        outputMedia: [],
+        outputState: 'provider_error',
+        previewText: '',
+        finalSource: 'notification_error',
+        status: null,
+        errorMessage: 'The \'gpt-5.4\' model is not supported when using Codex with a ChatGPT account.',
+        turnId: `${args.bridgeSession.codexThreadId}-turn-unsupported-model`,
+        threadId: args.bridgeSession.codexThreadId,
+        title: args.bridgeSession.title,
+      };
+    }
+    return originalStartTurn(args);
+  };
+
+  const result = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-user-unsupported-model-retry',
+    text: 'hello again',
+  });
+
+  assert.match(result.messages[0]?.text ?? '', /openai: hello again/);
+  assert.equal(runtime.services.bridgeSessions.getSessionSettings(original.session.bridgeSessionId)?.model, null);
+  assert.equal(openai.startTurnCalls.length, 3);
+  assert.equal(openai.startTurnCalls[1]?.sessionSettings?.model ?? null, 'gpt-5.4');
+  assert.equal(openai.startTurnCalls[2]?.sessionSettings?.model ?? null, null);
+});
+
+test('bridge coordinator reconnects the Codex runtime once when the selected workspace is invalid', async () => {
+  const { runtime, openai } = makeRuntime();
+  await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-user-invalid-workspace-retry',
+    text: 'hello',
+  });
+
+  let injected = false;
+  const originalStartTurn = openai.startTurn.bind(openai);
+  openai.startTurn = async (args) => {
+    if (!injected) {
+      injected = true;
+      throw new Error('unexpected status 403 Forbidden: {"detail":{"code":"invalid_workspace_selected"}}');
+    }
+    return originalStartTurn(args);
+  };
+
+  const result = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-user-invalid-workspace-retry',
+    text: 'hello again',
+  });
+
+  assert.match(result.messages[0]?.text ?? '', /openai: hello again/);
+  assert.equal(openai.reconnectProfileCalls.length, 1);
+});
+
 test('bridge coordinator rewrites approved execution stalls into a workaround hint', async () => {
   const { runtime, openai } = makeRuntime();
   await runtime.services.bridgeCoordinator.handleInboundEvent({

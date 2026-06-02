@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import type { WebCodexThreadSummary } from '@/lib/server/queries';
 
@@ -8,6 +9,7 @@ type SessionSidebarProps = {
   sessions: WebCodexThreadSummary[];
   activeThreadId?: string | null;
   onToggleSidebar?: () => void;
+  onThreadsChanged?: () => Promise<void>;
 };
 
 type SessionGroup = {
@@ -82,12 +84,10 @@ function SessionEntry({
   session,
   active,
   onNavigate,
-  onSelect,
 }: {
   session: WebCodexThreadSummary;
   active: boolean;
   onNavigate?: () => void;
-  onSelect?: (href: string) => void;
 }) {
   return (
     <button
@@ -95,7 +95,6 @@ function SessionEntry({
       className={`sidebar-session-entry${active ? ' active' : ''}`}
       onClick={() => {
         onNavigate?.();
-        onSelect?.(session.href);
       }}
       title={session.title}
       type="button"
@@ -109,7 +108,9 @@ export function SessionSidebar({
   sessions,
   activeThreadId = null,
   onToggleSidebar,
+  onThreadsChanged,
 }: SessionSidebarProps) {
+  const router = useRouter();
   const { pinned, groups, archived } = buildGroups(sessions);
   const [openGroupMenu, setOpenGroupMenu] = useState<string | null>(null);
   const [creatingCwd, setCreatingCwd] = useState<string | null>(null);
@@ -155,10 +156,6 @@ export function SessionSidebar({
     window.sessionStorage.setItem(SIDEBAR_SCROLL_KEY, String(scrollTop));
   }
 
-  function navigateToThread(href: string) {
-    window.location.assign(href);
-  }
-
   async function createThreadForFolder(cwd: string | null) {
     if (!cwd || creatingCwd) {
       return;
@@ -176,7 +173,9 @@ export function SessionSidebar({
         window.alert((payload?.error && String(payload.error).trim()) || '创建会话失败');
         return;
       }
-      window.location.assign(`/sessions/codex/${encodeURIComponent(payload.threadId)}`);
+      await onThreadsChanged?.();
+      persistSidebarScroll();
+      router.push(`/sessions/codex/${encodeURIComponent(payload.threadId)}`, { scroll: false });
     } catch (error) {
       window.alert(error instanceof Error ? error.message : '创建会话失败');
     } finally {
@@ -233,7 +232,7 @@ export function SessionSidebar({
         window.alert((payload?.error && String(payload.error).trim()) || '操作失败');
         return;
       }
-      window.location.reload();
+      await onThreadsChanged?.();
     } catch (error) {
       window.alert(error instanceof Error ? error.message : '操作失败');
     } finally {
@@ -276,8 +275,10 @@ export function SessionSidebar({
                 <SessionEntry
                   key={session.threadId}
                   active={session.threadId === activeThreadId}
-                  onNavigate={persistSidebarScroll}
-                  onSelect={navigateToThread}
+                  onNavigate={() => {
+                    persistSidebarScroll();
+                    router.push(session.href, { scroll: false });
+                  }}
                   session={session}
                 />
               ))}
@@ -386,8 +387,10 @@ export function SessionSidebar({
                       <SessionEntry
                         key={session.threadId}
                         active={session.threadId === activeThreadId}
-                        onNavigate={persistSidebarScroll}
-                        onSelect={navigateToThread}
+                        onNavigate={() => {
+                          persistSidebarScroll();
+                          router.push(session.href, { scroll: false });
+                        }}
                         session={session}
                       />
                     ))}
@@ -406,8 +409,10 @@ export function SessionSidebar({
                 <SessionEntry
                   key={session.threadId}
                   active={session.threadId === activeThreadId}
-                  onNavigate={persistSidebarScroll}
-                  onSelect={navigateToThread}
+                  onNavigate={() => {
+                    persistSidebarScroll();
+                    router.push(session.href, { scroll: false });
+                  }}
                   session={session}
                 />
               ))}

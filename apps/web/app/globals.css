@@ -35,6 +35,11 @@ body {
   overflow: hidden;
 }
 
+body.workspace-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
 a {
   color: inherit;
   text-decoration: none;
@@ -162,6 +167,7 @@ pre {
   min-height: 0;
   background: #f8f8f5;
   color: #171717;
+  --context-panel-width: 0px;
 }
 
 .workspace-shell-toggle {
@@ -208,7 +214,7 @@ pre {
 
 .workspace-shell-body {
   display: grid;
-  grid-template-columns: 284px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width, 284px) 12px minmax(0, 1fr) var(--context-panel-width);
   gap: 0;
   height: 100%;
   min-height: 0;
@@ -222,16 +228,64 @@ pre {
   min-width: 0;
 }
 
+.workspace-shell-resizer {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  position: relative;
+  width: 12px;
+  padding: 0;
+  cursor: col-resize;
+}
+
+.workspace-shell-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 1px;
+  background: rgba(15, 23, 42, 0.08);
+}
+
+.workspace-shell-resizer::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 42px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.14);
+}
+
+.workspace-shell-context-panel {
+  display: none;
+}
+
+.workspace-shell.has-context-panel {
+  --context-panel-width: 320px;
+}
+
+.workspace-shell.has-context-panel .workspace-shell-context-panel {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.5);
+}
+
 .workspace-shell.sidebar-closed .workspace-shell-body {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) var(--context-panel-width);
 }
 
 .workspace-shell.sidebar-closed .workspace-shell-sidebar {
   display: none;
 }
 
-.workspace-shell.sidebar-closed .workspace-shell-main {
-  padding-left: 0;
+.workspace-shell.sidebar-closed .workspace-shell-resizer {
+  display: none;
 }
 
 .workspace-sidebar,
@@ -386,7 +440,7 @@ pre {
 
 .sidebar-project-header {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) 64px;
   align-items: center;
   gap: 8px;
   color: rgba(23, 23, 23, 0.6);
@@ -446,8 +500,8 @@ pre {
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
+  width: 64px;
   opacity: 0;
-  visibility: hidden;
   pointer-events: none;
   transition: opacity 120ms ease;
 }
@@ -456,7 +510,6 @@ pre {
 .sidebar-project-header:focus-within .sidebar-project-actions,
 .sidebar-project-actions[data-open='true'] {
   opacity: 1;
-  visibility: visible;
   pointer-events: auto;
 }
 
@@ -620,15 +673,14 @@ pre {
   background: #f8f8f5;
 }
 
-.workspace-main-scroll {
-  height: 100%;
-  min-height: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
+.workspace-main--empty {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 6px;
-  padding: 8px 20px 16px;
+}
+
+.workspace-main--thread {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .workspace-floating-bar {
@@ -639,7 +691,7 @@ pre {
 }
 
 .workspace-floating-bar-thread {
-  width: min(100%, 840px);
+  width: min(100%, 760px);
   margin: 0 auto;
   padding: 8px 20px 0;
 }
@@ -662,7 +714,7 @@ pre {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  width: min(100%, 840px);
+  width: min(100%, 760px);
   margin: 0 auto;
   padding: 4px 4px 10px;
 }
@@ -746,13 +798,14 @@ pre {
 }
 
 .workspace-composer-form {
-  width: min(100%, 840px);
+  width: min(100%, 760px);
 }
 
 .workspace-thread-composer {
   flex: 0 0 auto;
-  padding: 8px 20px 12px;
-  background: linear-gradient(180deg, rgba(248, 248, 245, 0) 0%, #f8f8f5 32%, #f8f8f5 100%);
+  padding: 10px 20px 14px;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  background: linear-gradient(180deg, rgba(248, 248, 245, 0.68) 0%, #f8f8f5 28%, #f8f8f5 100%);
 }
 
 .workspace-thread-composer .workspace-composer-shell {
@@ -828,7 +881,7 @@ pre {
 }
 
 .workspace-reply-error {
-  width: min(100%, 840px);
+  width: min(100%, 760px);
   margin: 8px auto 0;
   color: #b42318;
   font-size: 13px;
@@ -838,7 +891,7 @@ pre {
 .workspace-thread-stream {
   min-height: 0;
   overflow: hidden;
-  padding: 0 20px 0;
+  padding: 0 20px;
 }
 
 .workspace-summary-grid {
@@ -926,8 +979,8 @@ pre {
   display: grid;
   height: 100%;
   min-height: 0;
-  gap: 16px;
-  width: min(100%, 840px);
+  gap: 12px;
+  width: min(100%, 760px);
   margin: 0 auto;
 }
 
@@ -935,13 +988,14 @@ pre {
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  padding: 10px 4px 28px;
+  padding: 8px 4px 12px;
+  scroll-padding-bottom: 32px;
 }
 
 .thread-message-list {
   display: grid;
-  gap: 24px;
-  padding-bottom: 18px;
+  gap: 18px;
+  padding-bottom: 8px;
 }
 
 .thread-message {
@@ -959,7 +1013,7 @@ pre {
 }
 
 .thread-message.assistant {
-  gap: 14px;
+  gap: 10px;
 }
 
 .thread-message-header {
@@ -979,7 +1033,7 @@ pre {
 
 .thread-message-body {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   max-width: 100%;
 }
 
@@ -996,7 +1050,7 @@ pre {
 .thread-message-body blockquote {
   margin: 0;
   color: #171717;
-  line-height: 1.7;
+  line-height: 1.68;
   word-break: break-word;
 }
 
@@ -1117,16 +1171,16 @@ pre {
 
 .thread-message.user .thread-message-body {
   margin-left: auto;
-  width: min(100%, 680px);
-  border-radius: 24px;
+  width: min(100%, 560px);
+  border-radius: 22px;
   background: #ffffff;
   border: 1px solid rgba(15, 23, 42, 0.08);
   box-shadow: 0 12px 32px rgba(15, 23, 42, 0.04);
-  padding: 16px 18px;
+  padding: 14px 16px;
 }
 
 .thread-message.assistant .thread-message-body {
-  width: min(100%, 720px);
+  width: min(100%, 680px);
 }
 
 .thread-message.assistant.pending .thread-message-body {
@@ -1154,8 +1208,8 @@ pre {
 
 .thread-message-process {
   display: grid;
-  gap: 10px;
-  width: min(100%, 720px);
+  gap: 8px;
+  width: min(100%, 680px);
 }
 
 .thread-message-process-toggle {
@@ -1165,10 +1219,11 @@ pre {
   padding: 0;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  color: rgba(23, 23, 23, 0.64);
+  gap: 8px;
+  color: rgba(23, 23, 23, 0.58);
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -1177,18 +1232,18 @@ pre {
 }
 
 .thread-message-process-toggle em {
-  color: rgba(23, 23, 23, 0.46);
+  color: rgba(23, 23, 23, 0.44);
   font-style: normal;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .thread-message-process-body {
   display: grid;
-  gap: 10px;
-  padding: 14px 16px;
-  border-radius: 16px;
-  background: rgba(15, 23, 42, 0.035);
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.025);
+  border: 1px solid rgba(15, 23, 42, 0.06);
 }
 
 .thread-message-process-body .thread-message-body,
@@ -1610,8 +1665,14 @@ pre {
     grid-template-columns: 1fr;
   }
 
+  .workspace-shell-resizer,
+  .workspace-shell-context-panel {
+    display: none;
+  }
+
   .workspace-shell {
     height: 100%;
+    --context-panel-width: 0px;
   }
 
   .workspace-shell-body {
@@ -1669,10 +1730,6 @@ pre {
 
   .workspace-thread-topbar h2 {
     font-size: 14px;
-  }
-
-  .workspace-main-scroll {
-    padding: 8px 14px 16px;
   }
 
   .workspace-thread-topbar {

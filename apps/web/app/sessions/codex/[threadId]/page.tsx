@@ -1,5 +1,5 @@
-import { CodexSessionsShell } from '@/components/codex-sessions-shell';
-import { getWebCodexThreadRecentMessages, listWebCodexThreads } from '@/lib/server/queries';
+import { CodexThreadPane } from '@/components/codex-sessions-shell';
+import { getWebCodexThreadRecentMessages } from '@/lib/server/queries';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,17 +9,13 @@ export default async function CodexThreadDetailPage({
   params: Promise<{ threadId: string }>;
 }) {
   const { threadId } = await params;
-  const [initialThreads, initialMessages] = await Promise.all([
-    listWebCodexThreads(),
-    getWebCodexThreadRecentMessages(threadId, 8),
-  ]);
+  const initialMessages = await getWebCodexThreadRecentMessages(threadId, 8);
 
   return (
-    <CodexSessionsShell
-      activeThreadId={threadId}
+    <CodexThreadPane
       initialThreadHasMore={initialMessages.hasMore}
       initialThreadMessages={initialMessages.items}
-      initialThreads={initialThreads}
+      threadId={threadId}
     />
   );
 }

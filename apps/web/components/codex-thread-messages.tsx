@@ -60,6 +60,7 @@ export function CodexThreadMessages({
   const previousThreadIdRef = useRef<string | null>(null);
   const previousCountRef = useRef(0);
   const previousTailSignatureRef = useRef('');
+  const pinnedRef = useRef(true);
   const restoringOlderRef = useRef(false);
   const olderMetricsRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
 
@@ -91,6 +92,22 @@ export function CodexThreadMessages({
     });
   }, [items]);
 
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) {
+      return;
+    }
+
+    function updatePinnedState() {
+      const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+      pinnedRef.current = distanceFromBottom < 48;
+    }
+
+    updatePinnedState();
+    viewport.addEventListener('scroll', updatePinnedState, { passive: true });
+    return () => viewport.removeEventListener('scroll', updatePinnedState);
+  }, [threadId]);
+
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) {
@@ -121,8 +138,9 @@ export function CodexThreadMessages({
       ? `${items.at(-1)?.id ?? ''}:${items.at(-1)?.text ?? ''}:${items.at(-1)?.processText ?? ''}:${items.at(-1)?.pending ? '1' : '0'}:${items.at(-1)?.processPending ? '1' : '0'}`
       : '';
     const tailChanged = previousTailSignatureRef.current !== nextTailSignature;
-    if (threadChanged || countGrew || tailChanged) {
+    if (threadChanged || ((countGrew || tailChanged) && pinnedRef.current)) {
       viewport.scrollTop = viewport.scrollHeight;
+      pinnedRef.current = true;
     }
 
     previousThreadIdRef.current = threadId;

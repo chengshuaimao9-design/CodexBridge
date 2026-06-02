@@ -1,54 +1,85 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
-
-const STORAGE_KEY = 'codexbridge-web-sidebar-open';
+import { useEffect, useRef, type PointerEvent, type ReactNode } from 'react';
 
 type WorkspaceShellProps = {
-  sidebar: ReactNode;
   children: ReactNode;
+  contextPanel?: ReactNode;
+  onSidebarWidthChange: (nextWidth: number) => void;
+  sidebar: ReactNode;
+  sidebarOpen: boolean;
+  sidebarWidth: number;
 };
 
-export function WorkspaceShell({ sidebar, children }: WorkspaceShellProps) {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+export function WorkspaceShell({
+  children,
+  contextPanel,
+  onSidebarWidthChange,
+  sidebar,
+  sidebarOpen,
+  sidebarWidth,
+}: WorkspaceShellProps) {
+  const resizeOriginRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
 
   useEffect(() => {
-    const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (saved === '0') {
-      setSidebarOpen(false);
-      return;
+    function handlePointerMove(event: PointerEvent | globalThis.PointerEvent) {
+      const origin = resizeOriginRef.current;
+      if (!origin) {
+        return;
+      }
+      const delta = event.clientX - origin.startX;
+      onSidebarWidthChange(origin.startWidth + delta);
     }
-    if (saved === '1') {
-      setSidebarOpen(true);
-      return;
-    }
-    setSidebarOpen(true);
-  }, []);
 
-  function toggleSidebar() {
-    setSidebarOpen((current) => {
-      const next = !current;
-      window.localStorage.setItem(STORAGE_KEY, next ? '1' : '0');
-      return next;
-    });
+    function handlePointerUp(event: globalThis.PointerEvent) {
+      const origin = resizeOriginRef.current;
+      if (!origin || event.pointerId !== origin.pointerId) {
+        return;
+      }
+      resizeOriginRef.current = null;
+      document.body.classList.remove('workspace-resizing');
+    }
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    return () => {
+      document.body.classList.remove('workspace-resizing');
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [onSidebarWidthChange]);
+
+  function handleResizeStart(event: PointerEvent<HTMLButtonElement>) {
+    resizeOriginRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: sidebarWidth,
+    };
+    document.body.classList.add('workspace-resizing');
+    event.currentTarget.setPointerCapture(event.pointerId);
   }
 
   return (
-    <section className={`workspace-shell${sidebarOpen ? ' sidebar-open' : ' sidebar-closed'}`}>
-      <div className="workspace-shell-toolbar">
-        <button
-          aria-expanded={sidebarOpen}
-          className="workspace-shell-toggle"
-          onClick={toggleSidebar}
-          type="button"
-        >
-          {sidebarOpen ? '隐藏目录' : '显示目录'}
-        </button>
-      </div>
-
+    <section
+      className={`workspace-shell${sidebarOpen ? ' sidebar-open' : ' sidebar-closed'}${contextPanel ? ' has-context-panel' : ''}`}
+      style={{ ['--sidebar-width' as string]: `${sidebarWidth}px` }}
+    >
       <div className="workspace-shell-body">
         <div className="workspace-shell-sidebar">{sidebar}</div>
+        {sidebarOpen ? (
+          <button
+            aria-label="调整目录宽度"
+            className="workspace-shell-resizer"
+            onPointerDown={handleResizeStart}
+            type="button"
+          />
+        ) : null}
         <div className="workspace-shell-main">{children}</div>
+        {contextPanel ? (
+          <aside className="workspace-shell-context-panel">
+            {contextPanel}
+          </aside>
+        ) : null}
       </div>
     </section>
   );

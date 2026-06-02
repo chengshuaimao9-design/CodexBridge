@@ -1,9 +1,7 @@
-import { CodexSessionsShell } from '@/components/codex-sessions-shell';
-import { listWebCodexThreads } from '@/lib/server/queries';
+import { CodexSessionsEmptyState } from '@/components/codex-sessions-shell';
 
 export const dynamic = 'force-dynamic';
 
 export default async function SessionsPage() {
-  const initialThreads = await listWebCodexThreads();
-  return <CodexSessionsShell initialThreads={initialThreads} />;
+  return <CodexSessionsEmptyState />;
 }

@@ -18,20 +18,53 @@ import type { WebCodexThreadSummary } from '@/lib/server/queries';
 
 const SIDEBAR_OPEN_STORAGE_KEY = 'codexbridge-web-sidebar-open';
 const SIDEBAR_WIDTH_STORAGE_KEY = 'codexbridge-web-sidebar-width';
+const LAST_ACTIVE_THREAD_STORAGE_KEY = 'codexbridge-web-last-active-thread-id';
+const LAST_ACTIVE_CWD_STORAGE_KEY = 'codexbridge-web-last-active-cwd';
+const LAST_ACTIVE_PERMISSIONS_MODE_STORAGE_KEY = 'codexbridge-web-last-active-permissions-mode';
+export const PENDING_CREATED_THREAD_STORAGE_KEY = 'codexbridge-web-pending-created-thread';
 const DEFAULT_SIDEBAR_WIDTH = 284;
 const MIN_SIDEBAR_WIDTH = 224;
 const MAX_SIDEBAR_WIDTH = 420;
+const DEFAULT_LAUNCH_CWD = '/home/ubuntu/dev/CodexBridge';
+
+type PermissionsMode = 'default-permissions' | 'auto-review' | 'full-access' | 'custom';
 
 type ThreadListResponse = {
   data: WebCodexThreadSummary[];
 };
 
+type DraftThreadState = {
+  cwd: string | null;
+  id: string;
+  permissionsMode: PermissionsMode;
+  startedAt: number;
+};
+
 type CodexWorkspaceContextValue = {
   activeThreadId: string | null;
+  closeSidebar: () => void;
+  createThread: (options?: {
+    cwd?: string | null;
+    initialSettings?: {
+      permissionsMode?: PermissionsMode | null;
+    };
+  }) => Promise<{
+    cwd: string | null;
+    threadId: string | null;
+  }>;
+  clearDraftThread: () => void;
+  draftThread: DraftThreadState | null;
+  isMobileViewport: boolean;
+  preferredLaunchPermissionsMode: PermissionsMode;
+  preferredLaunchCwd: string | null;
   refreshThreads: () => Promise<void>;
+  setPreferredLaunchPermissionsMode: (mode: PermissionsMode) => void;
   setThreads: Dispatch<SetStateAction<WebCodexThreadSummary[]>>;
   sidebarOpen: boolean;
   sidebarWidth: number;
+  startDraftThread: (options?: {
+    cwd?: string | null;
+  }) => DraftThreadState;
   threads: WebCodexThreadSummary[];
   toggleSidebar: () => void;
 };
@@ -40,6 +73,14 @@ const CodexWorkspaceContext = createContext<CodexWorkspaceContextValue | null>(n
 
 function clampSidebarWidth(value: number) {
   return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, value));
+}
+
+function createDraftThreadId() {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) {
+    return `draft:${uuid}`;
+  }
+  return `draft:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function parseActiveThreadId(pathname: string | null) {
@@ -89,6 +130,11 @@ export function CodexWorkspaceProvider({
   const [threads, setThreads] = useState<WebCodexThreadSummary[]>(initialThreads);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+  const [lastActiveThreadId, setLastActiveThreadId] = useState<string | null>(null);
+  const [lastActiveCwd, setLastActiveCwd] = useState<string | null>(null);
+  const [preferredLaunchPermissionsMode, setPreferredLaunchPermissionsModeState] = useState<PermissionsMode>('default-permissions');
+  const [draftThread, setDraftThread] = useState<DraftThreadState | null>(null);
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
 
   useEffect(() => {
     const savedOpen = window.localStorage.getItem(SIDEBAR_OPEN_STORAGE_KEY);
@@ -102,11 +148,62 @@ export function CodexWorkspaceProvider({
     if (Number.isFinite(savedWidth) && savedWidth > 0) {
       setSidebarWidth(clampSidebarWidth(savedWidth));
     }
+
+    const savedThreadId = window.localStorage.getItem(LAST_ACTIVE_THREAD_STORAGE_KEY)?.trim() || '';
+    if (savedThreadId) {
+      setLastActiveThreadId(savedThreadId);
+    }
+
+    const savedCwd = window.localStorage.getItem(LAST_ACTIVE_CWD_STORAGE_KEY)?.trim() || '';
+    if (savedCwd) {
+      setLastActiveCwd(savedCwd);
+    }
+
+    const savedPermissionsMode = window.localStorage.getItem(LAST_ACTIVE_PERMISSIONS_MODE_STORAGE_KEY)?.trim() || '';
+    if (
+      savedPermissionsMode === 'default-permissions'
+      || savedPermissionsMode === 'auto-review'
+      || savedPermissionsMode === 'full-access'
+      || savedPermissionsMode === 'custom'
+    ) {
+      setPreferredLaunchPermissionsModeState(savedPermissionsMode);
+    }
+
+    const media = window.matchMedia('(max-width: 960px)');
+    const syncViewport = () => setIsMobileViewport(media.matches);
+    syncViewport();
+    media.addEventListener('change', syncViewport);
+    return () => media.removeEventListener('change', syncViewport);
   }, []);
 
   useEffect(() => {
     setThreads((current) => (areThreadListsEqual(current, initialThreads) ? current : initialThreads));
   }, [initialThreads]);
+
+  useEffect(() => {
+    if (!activeThreadId) {
+      return;
+    }
+    const activeThread = threads.find((entry) => entry.threadId === activeThreadId);
+    if (!activeThread) {
+      return;
+    }
+    setLastActiveThreadId(activeThread.threadId);
+    window.localStorage.setItem(LAST_ACTIVE_THREAD_STORAGE_KEY, activeThread.threadId);
+
+    const nextCwd = activeThread.cwd?.trim() || '';
+    if (nextCwd) {
+      setLastActiveCwd(nextCwd);
+      window.localStorage.setItem(LAST_ACTIVE_CWD_STORAGE_KEY, nextCwd);
+    }
+  }, [activeThreadId, threads]);
+
+  useEffect(() => {
+    if (pathname === '/sessions') {
+      return;
+    }
+    setDraftThread(null);
+  }, [pathname]);
 
   const refreshThreads = useCallback(async () => {
     try {
@@ -129,21 +226,193 @@ export function CodexWorkspaceProvider({
     });
   }, []);
 
+  const closeSidebar = useCallback(() => {
+    if (!window.matchMedia('(max-width: 960px)').matches) {
+      return;
+    }
+    setSidebarOpen((current) => {
+      if (!current) {
+        return current;
+      }
+      window.localStorage.setItem(SIDEBAR_OPEN_STORAGE_KEY, '0');
+      return false;
+    });
+  }, []);
+
   const handleSidebarWidthChange = useCallback((nextWidth: number) => {
     const clamped = clampSidebarWidth(nextWidth);
     setSidebarWidth(clamped);
     window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clamped));
   }, []);
 
+  const preferredLaunchCwd = useMemo(() => {
+    const activeThread = activeThreadId
+      ? threads.find((entry) => entry.threadId === activeThreadId)
+      : null;
+    const activeCwd = activeThread?.cwd?.trim() || '';
+    if (activeCwd) {
+      return activeCwd;
+    }
+
+    const recentThread = lastActiveThreadId
+      ? threads.find((entry) => entry.threadId === lastActiveThreadId)
+      : null;
+    const recentCwd = recentThread?.cwd?.trim() || '';
+    if (recentCwd) {
+      return recentCwd;
+    }
+
+    if (lastActiveCwd?.trim()) {
+      return lastActiveCwd.trim();
+    }
+
+    const firstLiveCwd = threads.find((entry) => !entry.isArchived && entry.cwd?.trim())?.cwd?.trim() || '';
+    if (firstLiveCwd) {
+      return firstLiveCwd;
+    }
+
+    const firstKnownCwd = threads.find((entry) => entry.cwd?.trim())?.cwd?.trim() || '';
+    return firstKnownCwd || DEFAULT_LAUNCH_CWD;
+  }, [activeThreadId, lastActiveCwd, lastActiveThreadId, threads]);
+
+  const startDraftThread = useCallback((options?: {
+    cwd?: string | null;
+    permissionsMode?: PermissionsMode | null;
+  }) => {
+    const nextCwd = options?.cwd?.trim() || preferredLaunchCwd || null;
+    const nextPermissionsMode = options?.permissionsMode ?? preferredLaunchPermissionsMode;
+    if (nextCwd) {
+      setLastActiveCwd(nextCwd);
+      window.localStorage.setItem(LAST_ACTIVE_CWD_STORAGE_KEY, nextCwd);
+    }
+    const draft = {
+      cwd: nextCwd,
+      id: createDraftThreadId(),
+      permissionsMode: nextPermissionsMode,
+      startedAt: Date.now(),
+    } satisfies DraftThreadState;
+    setDraftThread(draft);
+    return draft;
+  }, [preferredLaunchCwd, preferredLaunchPermissionsMode]);
+
+  const clearDraftThread = useCallback(() => {
+    setDraftThread(null);
+  }, []);
+
+  const setPreferredLaunchPermissionsMode = useCallback((mode: PermissionsMode) => {
+    setPreferredLaunchPermissionsModeState(mode);
+    window.localStorage.setItem(LAST_ACTIVE_PERMISSIONS_MODE_STORAGE_KEY, mode);
+    setDraftThread((current) => current ? { ...current, permissionsMode: mode } : current);
+  }, []);
+
+  const createThread = useCallback(async (options?: {
+    cwd?: string | null;
+    initialSettings?: {
+      permissionsMode?: PermissionsMode | null;
+    };
+  }) => {
+    const cwd = options?.cwd?.trim() || preferredLaunchCwd || '';
+    const response = await fetch('/api/codex-folders/new', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cwd,
+        permissionsMode: options?.initialSettings?.permissionsMode ?? null,
+      }),
+    });
+    const payload = await response.json().catch(() => null) as {
+      ok?: boolean;
+      cwd?: string | null;
+      error?: string;
+      threadId?: string;
+    } | null;
+    if (!response.ok || !payload?.ok || !payload.threadId) {
+      throw new Error((payload?.error && String(payload.error).trim()) || '创建会话失败');
+    }
+
+    const nextCwd = payload.cwd?.trim() || cwd || null;
+    const optimisticThreadTitle = '新聊天';
+    const optimisticFolderLabel = nextCwd
+      ? nextCwd.replace(/\/+$/u, '').split('/').filter(Boolean).at(-1) || nextCwd
+      : '未归类';
+    if (nextCwd) {
+      setLastActiveCwd(nextCwd);
+      window.localStorage.setItem(LAST_ACTIVE_CWD_STORAGE_KEY, nextCwd);
+    }
+    setLastActiveThreadId(payload.threadId);
+    window.localStorage.setItem(LAST_ACTIVE_THREAD_STORAGE_KEY, payload.threadId);
+    window.sessionStorage.setItem(PENDING_CREATED_THREAD_STORAGE_KEY, JSON.stringify({
+      cwd: nextCwd,
+      threadId: payload.threadId,
+      title: optimisticThreadTitle,
+      updatedAtLabel: '刚刚',
+    }));
+    setThreads((current) => {
+      if (current.some((entry) => entry.threadId === payload.threadId)) {
+        return current;
+      }
+      return [
+        {
+          alias: null,
+          cwd: nextCwd,
+          folderKey: nextCwd,
+          folderLabel: optimisticFolderLabel,
+          folderPinned: false,
+          folderRemoved: false,
+          href: `/sessions/codex/${encodeURIComponent(payload.threadId)}`,
+          isArchived: false,
+          isPinned: false,
+          linkedBridgeSessionCount: 1,
+          linkedBridgeSessionId: null,
+          threadId: payload.threadId,
+          title: optimisticThreadTitle,
+          updatedAt: Date.now(),
+          updatedAtLabel: '刚刚',
+        },
+        ...current,
+      ];
+    });
+    void refreshThreads();
+    return {
+      cwd: nextCwd,
+      threadId: payload.threadId,
+    };
+  }, [preferredLaunchCwd, refreshThreads]);
+
   const value = useMemo<CodexWorkspaceContextValue>(() => ({
     activeThreadId,
+    closeSidebar,
+    createThread,
+    clearDraftThread,
+    draftThread,
+    isMobileViewport,
+    preferredLaunchPermissionsMode,
+    preferredLaunchCwd,
     refreshThreads,
+    setPreferredLaunchPermissionsMode,
     setThreads,
     sidebarOpen,
     sidebarWidth,
+    startDraftThread,
     threads,
     toggleSidebar,
-  }), [activeThreadId, refreshThreads, sidebarOpen, sidebarWidth, threads, toggleSidebar]);
+  }), [
+    activeThreadId,
+    closeSidebar,
+    clearDraftThread,
+    createThread,
+    draftThread,
+    isMobileViewport,
+    preferredLaunchPermissionsMode,
+    preferredLaunchCwd,
+    refreshThreads,
+    setPreferredLaunchPermissionsMode,
+    sidebarOpen,
+    sidebarWidth,
+    startDraftThread,
+    threads,
+    toggleSidebar,
+  ]);
 
   return (
     <CodexWorkspaceContext.Provider value={value}>
@@ -152,9 +421,13 @@ export function CodexWorkspaceProvider({
         sidebar={(
           <SessionSidebar
             activeThreadId={activeThreadId}
+            onCloseSidebar={closeSidebar}
             onToggleSidebar={toggleSidebar}
             onThreadsChanged={refreshThreads}
+            preferredLaunchCwd={preferredLaunchCwd}
             sessions={threads}
+            onStartDraftThread={startDraftThread}
+            setThreads={setThreads}
           />
         )}
         sidebarOpen={sidebarOpen}

@@ -1,15 +1,24 @@
 'use client';
 
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import type { WebCodexThreadSummary } from '@/lib/server/queries';
 
 type SessionSidebarProps = {
   sessions: WebCodexThreadSummary[];
   activeThreadId?: string | null;
+  onCloseSidebar?: () => void;
+  onStartDraftThread: (options?: {
+    cwd?: string | null;
+  }) => {
+    cwd: string | null;
+    id: string;
+    startedAt: number;
+  };
   onToggleSidebar?: () => void;
   onThreadsChanged?: () => Promise<void>;
+  preferredLaunchCwd: string | null;
+  setThreads: Dispatch<SetStateAction<WebCodexThreadSummary[]>>;
 };
 
 type SessionGroup = {
@@ -81,43 +90,108 @@ function buildGroups(sessions: WebCodexThreadSummary[]) {
 }
 
 function SessionEntry({
+  busy,
+  onArchive,
   session,
   active,
   onNavigate,
+  onPin,
 }: {
+  busy: boolean;
+  onArchive: () => void;
   session: WebCodexThreadSummary;
   active: boolean;
   onNavigate?: () => void;
+  onPin: () => void;
 }) {
   return (
-    <button
-      aria-current={active ? 'page' : undefined}
-      className={`sidebar-session-entry${active ? ' active' : ''}`}
-      onClick={() => {
-        onNavigate?.();
-      }}
-      title={session.title}
-      type="button"
-    >
-      <span className="sidebar-session-title">{session.title}</span>
-    </button>
+    <div className={`sidebar-session-row${active ? ' active' : ''}`}>
+      <button
+        aria-current={active ? 'page' : undefined}
+        className={`sidebar-session-entry${active ? ' active' : ''}`}
+        onClick={() => {
+          onNavigate?.();
+        }}
+        title={session.title}
+        type="button"
+      >
+        <span className="sidebar-session-title">{session.title}</span>
+      </button>
+      <div className="sidebar-session-actions">
+        <button
+          aria-label={session.isPinned ? '取消置顶' : '置顶'}
+          className={`sidebar-session-action-button${session.isPinned ? ' active' : ''}`}
+          disabled={busy}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onPin();
+          }}
+          title={session.isPinned ? '取消置顶' : '置顶'}
+          type="button"
+        >
+          <img alt="" aria-hidden="true" className="sidebar-session-action-icon" src="/icons/pin.svg" />
+        </button>
+        <button
+          aria-label={session.isArchived ? '取消归档' : '归档'}
+          className={`sidebar-session-action-button${session.isArchived ? ' active' : ''}`}
+          disabled={busy}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onArchive();
+          }}
+          title={session.isArchived ? '取消归档' : '归档'}
+          type="button"
+        >
+          <img alt="" aria-hidden="true" className="sidebar-session-action-icon" src="/icons/archive.svg" />
+        </button>
+      </div>
+    </div>
   );
 }
 
 export function SessionSidebar({
   sessions,
   activeThreadId = null,
+  onCloseSidebar,
+  onStartDraftThread,
   onToggleSidebar,
   onThreadsChanged,
+  preferredLaunchCwd,
+  setThreads,
 }: SessionSidebarProps) {
   const router = useRouter();
-  const { pinned, groups, archived } = buildGroups(sessions);
   const [openGroupMenu, setOpenGroupMenu] = useState<string | null>(null);
-  const [creatingCwd, setCreatingCwd] = useState<string | null>(null);
   const [folderActioningKey, setFolderActioningKey] = useState<string | null>(null);
+  const [threadActioningId, setThreadActioningId] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const menuRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const restoredScrollRef = useRef(false);
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const filteredSessions = useMemo(() => {
+    if (!normalizedSearchQuery) {
+      return sessions;
+    }
+    return sessions.filter((session) => {
+      const haystacks = [
+        session.title,
+        session.cwd,
+        session.folderLabel,
+        session.alias,
+      ]
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .map((value) => value.toLowerCase());
+      return haystacks.some((value) => value.includes(normalizedSearchQuery));
+    });
+  }, [normalizedSearchQuery, sessions]);
+  const { pinned, groups, archived } = useMemo(
+    () => buildGroups(filteredSessions),
+    [filteredSessions],
+  );
 
   useEffect(() => {
     function handlePointer(event: MouseEvent) {
@@ -156,30 +230,93 @@ export function SessionSidebar({
     window.sessionStorage.setItem(SIDEBAR_SCROLL_KEY, String(scrollTop));
   }
 
-  async function createThreadForFolder(cwd: string | null) {
-    if (!cwd || creatingCwd) {
+  useEffect(() => {
+    if (!searchOpen) {
       return;
     }
-    setCreatingCwd(cwd);
+    searchInputRef.current?.focus();
+    searchInputRef.current?.select();
+  }, [searchOpen]);
+
+  function getProjectLabelFromCwd(cwd: string | null) {
+    if (!cwd) {
+      return '默认位置';
+    }
+    return getProjectLabel(cwd);
+  }
+
+  function handleCreateDraftThread(cwd?: string | null) {
+    const targetCwd = cwd?.trim() || preferredLaunchCwd || null;
     setOpenGroupMenu(null);
+    onStartDraftThread({ cwd: targetCwd });
+    persistSidebarScroll();
+    onCloseSidebar?.();
+    router.push('/sessions', { scroll: false });
+  }
+
+  function navigateToThread(href: string) {
+    persistSidebarScroll();
+    onCloseSidebar?.();
+    router.push(href, { scroll: false });
+  }
+
+  function createThreadForFolder(cwd: string | null) {
+    if (!cwd) {
+      return;
+    }
+    handleCreateDraftThread(cwd);
+  }
+
+  async function applySessionAction(
+    session: WebCodexThreadSummary,
+    action: 'pin' | 'unpin' | 'archive' | 'unarchive',
+  ) {
+    if (threadActioningId) {
+      return;
+    }
+
+    const actioningKey = `${session.threadId}:${action}`;
+    setThreadActioningId(actioningKey);
+
+    setThreads((current) => current.map((entry) => {
+      if (entry.threadId !== session.threadId) {
+        return entry;
+      }
+      return {
+        ...entry,
+        isArchived: action === 'archive'
+          ? true
+          : action === 'unarchive'
+            ? false
+            : entry.isArchived,
+        isPinned: action === 'pin'
+          ? true
+          : action === 'unpin'
+            ? false
+            : entry.isPinned,
+        updatedAt: Date.now(),
+        updatedAtLabel: '刚刚',
+      };
+    }));
+
     try {
-      const response = await fetch('/api/codex-folders/new', {
+      const response = await fetch(`/api/codex-threads/${encodeURIComponent(session.threadId)}/meta`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cwd }),
+        body: JSON.stringify({ action }),
       });
-      const payload = await response.json().catch(() => null) as { ok?: boolean; threadId?: string; error?: string } | null;
-      if (!response.ok || !payload?.ok || !payload.threadId) {
-        window.alert((payload?.error && String(payload.error).trim()) || '创建会话失败');
-        return;
+      const payload = await response.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (!response.ok || !payload?.ok) {
+        throw new Error((payload?.error && String(payload.error).trim()) || '操作失败');
       }
       await onThreadsChanged?.();
-      persistSidebarScroll();
-      router.push(`/sessions/codex/${encodeURIComponent(payload.threadId)}`, { scroll: false });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : '创建会话失败');
+      setThreads((current) => current.map((entry) => (
+        entry.threadId === session.threadId ? session : entry
+      )));
+      window.alert(error instanceof Error ? error.message : '操作失败');
     } finally {
-      setCreatingCwd(null);
+      setThreadActioningId(null);
     }
   }
 
@@ -255,18 +392,89 @@ export function SessionSidebar({
           </button>
         </div>
         <div className="workspace-sidebar-shortcuts">
-          <Link className="workspace-sidebar-shortcut workspace-sidebar-shortcut-primary" href="/sessions" scroll={false}>
+          <button
+            className="workspace-sidebar-shortcut"
+            onClick={() => {
+              handleCreateDraftThread();
+            }}
+            type="button"
+          >
             <img alt="" aria-hidden="true" className="workspace-sidebar-shortcut-icon" src="/icons/new-thread.svg" />
             <span>新聊天</span>
-          </Link>
-          <button className="workspace-sidebar-shortcut" disabled type="button">
+          </button>
+          <button
+            aria-expanded={searchOpen}
+            className="workspace-sidebar-shortcut"
+            onClick={() => {
+              setSearchOpen((current) => {
+                const next = !current;
+                if (!next) {
+                  setSearchQuery('');
+                }
+                return next;
+              });
+            }}
+            type="button"
+          >
             <span aria-hidden="true">⌕</span>
             <span>搜索聊天</span>
           </button>
+          {searchOpen ? (
+            <label className="workspace-sidebar-search">
+              <span className="workspace-sidebar-search-icon" aria-hidden="true">⌕</span>
+              <input
+                className="workspace-sidebar-search-input"
+                onChange={(event) => setSearchQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    setSearchOpen(false);
+                    setSearchQuery('');
+                  }
+                }}
+                placeholder="搜索标题、目录或分组"
+                ref={searchInputRef}
+                type="search"
+                value={searchQuery}
+              />
+            </label>
+          ) : null}
         </div>
       </div>
 
       <div className="workspace-sidebar-scroll" onScroll={persistSidebarScroll} ref={scrollRef}>
+        {searchOpen && normalizedSearchQuery ? (
+          <section className="sidebar-section">
+            <h2 className="sidebar-section-title">
+              搜索结果
+              <span className="sidebar-section-title-count"> {filteredSessions.length}</span>
+            </h2>
+            <div className="sidebar-session-list">
+              {filteredSessions.length === 0 ? (
+                <div className="sidebar-empty">没有匹配的会话。</div>
+              ) : (
+                filteredSessions
+                  .slice()
+                  .sort((left, right) => right.updatedAt - left.updatedAt)
+                  .map((session) => (
+                    <SessionEntry
+                      key={session.threadId}
+                      active={session.threadId === activeThreadId}
+                      busy={threadActioningId?.startsWith(`${session.threadId}:`) ?? false}
+                      onArchive={() => void applySessionAction(session, session.isArchived ? 'unarchive' : 'archive')}
+                      onNavigate={() => {
+                        navigateToThread(session.href);
+                      }}
+                      onPin={() => void applySessionAction(session, session.isPinned ? 'unpin' : 'pin')}
+                      session={session}
+                    />
+                  ))
+              )}
+            </div>
+          </section>
+        ) : null}
+
+        {!normalizedSearchQuery ? (
+          <>
         {pinned.length > 0 ? (
           <section className="sidebar-section">
             <h2 className="sidebar-section-title">置顶</h2>
@@ -275,10 +483,12 @@ export function SessionSidebar({
                 <SessionEntry
                   key={session.threadId}
                   active={session.threadId === activeThreadId}
+                  busy={threadActioningId?.startsWith(`${session.threadId}:`) ?? false}
+                  onArchive={() => void applySessionAction(session, session.isArchived ? 'unarchive' : 'archive')}
                   onNavigate={() => {
-                    persistSidebarScroll();
-                    router.push(session.href, { scroll: false });
+                    navigateToThread(session.href);
                   }}
+                  onPin={() => void applySessionAction(session, session.isPinned ? 'unpin' : 'pin')}
                   session={session}
                 />
               ))}
@@ -369,11 +579,10 @@ export function SessionSidebar({
                       <button
                         aria-label={`在 ${group.label} 下新建会话`}
                         className="sidebar-project-action-button"
-                        disabled={creatingCwd === group.cwd}
                         onClick={(event) => {
                           event.preventDefault();
                           event.stopPropagation();
-                          void createThreadForFolder(group.cwd);
+                          createThreadForFolder(group.cwd);
                         }}
                         title="在当前文件夹下新建会话"
                         type="button"
@@ -387,10 +596,12 @@ export function SessionSidebar({
                       <SessionEntry
                         key={session.threadId}
                         active={session.threadId === activeThreadId}
+                        busy={threadActioningId?.startsWith(`${session.threadId}:`) ?? false}
+                        onArchive={() => void applySessionAction(session, session.isArchived ? 'unarchive' : 'archive')}
                         onNavigate={() => {
-                          persistSidebarScroll();
-                          router.push(session.href, { scroll: false });
+                          navigateToThread(session.href);
                         }}
+                        onPin={() => void applySessionAction(session, session.isPinned ? 'unpin' : 'pin')}
                         session={session}
                       />
                     ))}
@@ -409,15 +620,19 @@ export function SessionSidebar({
                 <SessionEntry
                   key={session.threadId}
                   active={session.threadId === activeThreadId}
+                  busy={threadActioningId?.startsWith(`${session.threadId}:`) ?? false}
+                  onArchive={() => void applySessionAction(session, session.isArchived ? 'unarchive' : 'archive')}
                   onNavigate={() => {
-                    persistSidebarScroll();
-                    router.push(session.href, { scroll: false });
+                    navigateToThread(session.href);
                   }}
+                  onPin={() => void applySessionAction(session, session.isPinned ? 'unpin' : 'pin')}
                   session={session}
                 />
               ))}
             </div>
           </section>
+        ) : null}
+          </>
         ) : null}
       </div>
 
@@ -426,6 +641,9 @@ export function SessionSidebar({
           <span className="workspace-settings-icon">⚙</span>
           <span>设置</span>
         </a>
+        <p className="workspace-sidebar-footnote">
+          默认新聊天将创建在 {getProjectLabelFromCwd(preferredLaunchCwd)} 中
+        </p>
       </div>
     </aside>
   );

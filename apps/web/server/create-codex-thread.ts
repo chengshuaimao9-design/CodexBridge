@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { stdin, stdout, stderr } from 'node:process';
 import { createCodexBridgeRuntime } from '../../../src/runtime/bootstrap.ts';
+import { buildPermissionsSettingsUpdate, normalizePermissionsMode } from '../../../src/core/permissions_mode.ts';
 import { createFileJsonRepositories } from '../../../src/store/file_json/create_file_json_repositories.ts';
 import { OpenAINativeProviderPlugin } from '../../../src/providers/openai_native/plugin.ts';
 import { OpenAICompatibleProviderPlugin } from '../../../src/providers/openai_compatible/plugin.ts';
@@ -9,6 +10,7 @@ import { CodexGoalManager } from '../../../src/providers/codex/goal_state.ts';
 
 type InputPayload = {
   cwd?: unknown;
+  permissionsMode?: unknown;
   stateDir?: unknown;
   repoRoot?: unknown;
 };
@@ -45,12 +47,14 @@ async function main() {
   const raw = await readStdin();
   const payload = JSON.parse(raw || '{}') as InputPayload;
   const cwd = normalizeText(payload.cwd);
+  const permissionsMode = normalizePermissionsMode(payload.permissionsMode);
   const stateDir = normalizeText(payload.stateDir);
   const repoRoot = normalizeText(payload.repoRoot);
 
-  if (!cwd || !stateDir || !repoRoot) {
+  if (!stateDir || !repoRoot) {
     throw new Error('invalid_request');
   }
+  const targetCwd = cwd || repoRoot;
 
   const runtimeDir = path.join(stateDir, 'runtime');
   const repositories = createFileJsonRepositories(runtimeDir);
@@ -81,7 +85,10 @@ async function main() {
   const providerProfileId = resolveNativeProviderProfileId(runtime);
   const session = await runtime.services.bridgeSessions.createDetachedSession({
     providerProfileId,
-    cwd,
+    cwd: targetCwd,
+    initialSettings: permissionsMode
+      ? buildPermissionsSettingsUpdate(permissionsMode)
+      : {},
     title: null,
   });
 
@@ -93,7 +100,7 @@ async function main() {
     ok: true,
     threadId: session.codexThreadId,
     bridgeSessionId: session.id,
-    cwd: session.cwd ?? cwd,
+    cwd: session.cwd ?? targetCwd,
     title: session.title,
   })}\n`);
 }

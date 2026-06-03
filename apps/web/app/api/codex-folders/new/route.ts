@@ -1,15 +1,14 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
+import { clearWebQueryCaches } from '@/lib/server/queries';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
-  const payload = await request.json().catch(() => null) as { cwd?: unknown } | null;
+  const payload = await request.json().catch(() => null) as { cwd?: unknown; permissionsMode?: unknown } | null;
   const cwd = typeof payload?.cwd === 'string' ? payload.cwd.trim() : '';
-  if (!cwd) {
-    return NextResponse.json({ error: 'cwd is required' }, { status: 400 });
-  }
+  const permissionsMode = typeof payload?.permissionsMode === 'string' ? payload.permissionsMode.trim() : '';
 
   const scriptPath = path.join(process.cwd(), 'server', 'create-codex-thread.ts');
   const repoRoot = path.resolve(process.cwd(), '..', '..');
@@ -42,7 +41,8 @@ export async function POST(request: NextRequest) {
     });
 
     child.stdin.end(JSON.stringify({
-      cwd,
+      cwd: cwd || null,
+      permissionsMode: permissionsMode || null,
       stateDir,
       repoRoot,
     }));
@@ -55,6 +55,8 @@ export async function POST(request: NextRequest) {
     cwd?: string | null;
     title?: string | null;
   };
+
+  clearWebQueryCaches();
 
   return NextResponse.json(parsed);
 }

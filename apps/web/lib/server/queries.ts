@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { buildPermissionsSettingsUpdate, resolvePermissionsState } from '../../../../src/core/permissions_mode';
+import type { ApprovalsReviewer, PermissionsMode } from '../../../../src/types/core';
 import { getWebPaths, readRuntimeJson } from './runtime';
-import { segmentAssistantText } from '@/lib/chat-segmentation';
 
 type StoredBridgeSession = {
   id: string;
@@ -18,6 +19,11 @@ type StoredSessionSettings = {
   model: string | null;
   reasoningEffort: string | null;
   serviceTier: string | null;
+  permissionsMode?: PermissionsMode | null;
+  accessPreset?: 'read-only' | 'default' | 'full-access' | null;
+  approvalPolicy?: string | null;
+  sandboxMode?: string | null;
+  approvalsReviewer?: ApprovalsReviewer | null;
   locale: string | null;
   metadata: Record<string, unknown>;
   updatedAt: number;
@@ -110,15 +116,24 @@ type QueryCacheEntry<T> = {
   value: T;
 };
 
+type ThreadMessageCacheEntry = {
+  expiresAt: number;
+  messages: WebCodexThreadMessage[];
+  mtimeMs: number;
+  size: number;
+};
+
 const QUERY_CACHE_TTL_MS = 3_000;
 let codexSessionIndexCache: QueryCacheEntry<StoredCodexSessionIndexEntry[]> | null = null;
 let codexSessionMetaMapCache: QueryCacheEntry<Map<string, StoredCodexSessionMeta>> | null = null;
 let codexSessionFileMapCache: QueryCacheEntry<Map<string, string>> | null = null;
+const threadMessageCache = new Map<string, ThreadMessageCacheEntry>();
 
 export function clearWebQueryCaches() {
   codexSessionIndexCache = null;
   codexSessionMetaMapCache = null;
   codexSessionFileMapCache = null;
+  threadMessageCache.clear();
 }
 
 export type WebSessionSummary = {
@@ -200,6 +215,44 @@ export type WebCodexThreadDetail = {
   bindings: StoredPlatformBinding[];
   automations: WebAutomationSummary[];
   relatedRecords: WebAssistantRecordSummary[];
+};
+
+export type WebCodexThreadSettings = {
+  bridgeSessionId: string | null;
+  model: string | null;
+  reasoningEffort: string | null;
+  serviceTier: string | null;
+  permissionsMode: 'default-permissions' | 'auto-review' | 'full-access' | 'custom';
+  accessPreset: string | null;
+  approvalPolicy: string | null;
+  sandboxMode: string | null;
+  approvalsReviewer: 'user' | 'auto_review' | null;
+  usesProfileDefaults: boolean;
+};
+
+export type WebCodexThreadModelOption = {
+  id: string;
+  model: string;
+  displayName: string;
+  description: string;
+  isDefault: boolean;
+  supportedReasoningEfforts: string[];
+  defaultReasoningEffort: string | null;
+};
+
+export type WebCodexThreadModelOptions = {
+  bridgeSessionId: string | null;
+  model: string | null;
+  reasoningEffort: string | null;
+  serviceTier: string | null;
+  effectiveModelId: string | null;
+  effectiveModelLabel: string;
+  effectiveModelDescription: string;
+  effectiveModelSource: 'session' | 'profile_default' | 'provider_default' | 'provider_first' | 'unset';
+  effectiveReasoningEffort: string;
+  effectiveReasoningEffortSource: 'session' | 'model_default' | 'unset';
+  defaultReasoningEffort: string | null;
+  availableModels: WebCodexThreadModelOption[];
 };
 
 export type WebCodexThreadMessage = {
@@ -755,6 +808,33 @@ export async function getWebCodexThreadDetail(threadId: string): Promise<WebCode
   };
 }
 
+export async function getWebCodexThreadSettings(
+  threadId: string,
+): Promise<WebCodexThreadSettings | null> {
+  const threadDetail = await getWebCodexThreadDetail(threadId);
+  if (!threadDetail) {
+    return null;
+  }
+  const settings = getStoredSessionSettings();
+  const linkedSession = threadDetail.linkedSessions[0] ?? null;
+  const linkedSettings = linkedSession
+    ? settings.find((entry) => entry.bridgeSessionId === linkedSession.id) ?? null
+    : null;
+  const resolved = resolvePermissionsState(linkedSettings ?? buildPermissionsSettingsUpdate('default-permissions'));
+  return {
+    bridgeSessionId: linkedSession?.id ?? null,
+    model: linkedSettings?.model ?? null,
+    reasoningEffort: linkedSettings?.reasoningEffort ?? null,
+    serviceTier: linkedSettings?.serviceTier ?? null,
+    permissionsMode: resolved.permissionsMode,
+    accessPreset: resolved.accessPreset,
+    approvalPolicy: resolved.approvalPolicy,
+    sandboxMode: resolved.sandboxMode,
+    approvalsReviewer: resolved.approvalsReviewer,
+    usesProfileDefaults: resolved.usesProfileDefaults,
+  };
+}
+
 function extractMessageText(
   content:
     | Array<{ type?: string; text?: string; content?: Array<{ text?: string }> }>
@@ -832,22 +912,6 @@ function parseCodexMessagesFromLines(lines: string[]): WebCodexThreadMessage[] {
       if (!text || isInternalCodexUserMessage(parsed.payload.role, text)) {
         continue;
       }
-      if (parsed.payload.role === 'assistant') {
-        const segments = segmentAssistantText(text);
-        if (segments.length === 0) {
-          continue;
-        }
-        for (let index = 0; index < segments.length; index += 1) {
-          messages.push({
-            id: `${parsed.timestamp ?? 'msg'}:${messages.length}:${index}`,
-            role: 'assistant',
-            source: 'history',
-            text: segments[index] ?? '',
-            timestamp: parsed.timestamp ?? null,
-          });
-        }
-        continue;
-      }
       messages.push({
         id: `${parsed.timestamp ?? 'msg'}:${messages.length}`,
         role: parsed.payload.role,
@@ -881,6 +945,30 @@ function readFileTail(filePath: string, maxBytes = 1024 * 1024): string {
   }
 }
 
+function getCachedThreadMessages(threadId: string, filePath: string): WebCodexThreadMessage[] {
+  const stat = fs.statSync(filePath);
+  const cached = threadMessageCache.get(threadId);
+  const now = Date.now();
+  if (
+    cached
+    && cached.expiresAt > now
+    && cached.mtimeMs === stat.mtimeMs
+    && cached.size === stat.size
+  ) {
+    return cached.messages;
+  }
+
+  const raw = fs.readFileSync(filePath, 'utf8');
+  const messages = parseCodexMessagesFromLines(raw.split('\n'));
+  threadMessageCache.set(threadId, {
+    expiresAt: now + QUERY_CACHE_TTL_MS,
+    messages,
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+  });
+  return messages;
+}
+
 export async function listWebCodexThreadMessages(
   threadId: string,
   offset = 0,
@@ -897,8 +985,7 @@ export async function listWebCodexThreadMessages(
     };
   }
 
-  const raw = fs.readFileSync(filePath, 'utf8');
-  const messages = parseCodexMessagesFromLines(raw.split('\n'));
+  const messages = getCachedThreadMessages(threadId, filePath);
   const end = Math.max(0, messages.length - offset);
   const start = Math.max(0, end - limit);
   const slice = messages.slice(start, end);

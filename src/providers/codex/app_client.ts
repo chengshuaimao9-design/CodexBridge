@@ -523,27 +523,26 @@ export class CodexAppClient extends EventEmitter {
     title = null,
     model = null,
     serviceTier = null,
-    sandboxMode = 'workspace-write',
-    approvalPolicy = 'on-request',
+    sandboxMode = null,
+    approvalPolicy = null,
+    configOverrides = null,
     ephemeral = null,
   }: {
     cwd?: string | null;
     title?: string | null;
     model?: string | null;
     serviceTier?: string | null;
-    sandboxMode?: string;
-    approvalPolicy?: string;
+    sandboxMode?: string | null;
+    approvalPolicy?: string | null;
+    configOverrides?: Record<string, unknown> | null;
     ephemeral?: boolean | null;
   } = {}): Promise<ProviderThreadStartResult> {
-    const result: any = await this.request('thread/start', {
+    const requestPayload: Record<string, unknown> = {
       cwd,
       title,
-      approvalPolicy,
       model,
       modelProvider: null,
       serviceTier,
-      sandbox: sandboxMode,
-      config: null,
       serviceName: null,
       baseInstructions: null,
       developerInstructions: null,
@@ -551,7 +550,17 @@ export class CodexAppClient extends EventEmitter {
       ephemeral,
       experimentalRawEvents: true,
       persistExtendedHistory: false,
-    }, { timeoutMs: 30_000 });
+    };
+    if (typeof approvalPolicy === 'string' && approvalPolicy.trim()) {
+      requestPayload.approvalPolicy = approvalPolicy;
+    }
+    if (typeof sandboxMode === 'string' && sandboxMode.trim()) {
+      requestPayload.sandbox = sandboxMode;
+    }
+    if (configOverrides && Object.keys(configOverrides).length > 0) {
+      requestPayload.config = configOverrides;
+    }
+    const result: any = await this.request('thread/start', requestPayload, { timeoutMs: 30_000 });
     return {
       threadId: String(result.thread.id),
       cwd: result.cwd ? String(result.cwd) : null,
@@ -689,8 +698,9 @@ export class CodexAppClient extends EventEmitter {
     effort = null,
     serviceTier = null,
     personality = null,
-    sandboxMode = 'workspace-write',
-    approvalPolicy = 'on-request',
+    sandboxMode = null,
+    approvalPolicy = null,
+    configOverrides = null,
     collaborationMode = 'default',
     developerInstructions = '',
     onProgress = null,
@@ -706,8 +716,9 @@ export class CodexAppClient extends EventEmitter {
     effort?: string | null;
     serviceTier?: string | null;
     personality?: string | null;
-    sandboxMode?: string;
-    approvalPolicy?: string;
+    sandboxMode?: string | null;
+    approvalPolicy?: string | null;
+    configOverrides?: Record<string, unknown> | null;
     collaborationMode?: string;
     developerInstructions?: string;
     onProgress?: ((progress: ProviderTurnProgress) => Promise<void> | void) | null;
@@ -737,7 +748,9 @@ export class CodexAppClient extends EventEmitter {
           }],
       ),
     });
-    const sandboxPolicy = mapSandboxPolicy(sandboxMode);
+    const sandboxPolicy = typeof sandboxMode === 'string' && sandboxMode.trim()
+      ? mapSandboxPolicy(sandboxMode)
+      : null;
     const requestPayload: Record<string, unknown> = {
       threadId,
       input: Array.isArray(input) && input.length > 0
@@ -746,14 +759,9 @@ export class CodexAppClient extends EventEmitter {
           type: 'text',
           text: inputText,
           text_elements: [],
-        }],
+      }],
       cwd,
-      approvalPolicy,
-      sandboxPolicy,
-      settings: {
-        approvalPolicy,
-        sandboxPolicy,
-      },
+      settings: {},
       collaborationMode: serializeCollaborationMode({
         collaborationMode,
         model,
@@ -761,6 +769,17 @@ export class CodexAppClient extends EventEmitter {
         developerInstructions,
       }),
     };
+    if (typeof approvalPolicy === 'string' && approvalPolicy.trim()) {
+      requestPayload.approvalPolicy = approvalPolicy;
+      (requestPayload.settings as Record<string, unknown>).approvalPolicy = approvalPolicy;
+    }
+    if (sandboxPolicy) {
+      requestPayload.sandboxPolicy = sandboxPolicy;
+      (requestPayload.settings as Record<string, unknown>).sandboxPolicy = sandboxPolicy;
+    }
+    if (configOverrides && Object.keys(configOverrides).length > 0) {
+      requestPayload.config = configOverrides;
+    }
     if (typeof model === 'string' && model.trim()) {
       requestPayload.model = model;
       (requestPayload.settings as Record<string, unknown>).model = model;

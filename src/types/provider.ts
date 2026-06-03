@@ -1,3 +1,5 @@
+import type { ApprovalsReviewer, PermissionsMode } from './core.js';
+
 export type ProviderInboundAttachmentKind = 'image' | 'voice' | 'file' | 'video';
 
 export interface ProviderTurnAttachment {
@@ -36,9 +38,11 @@ export interface ProviderTurnSessionSettings {
   serviceTier: string | null;
   collaborationMode?: 'plan' | 'default' | null;
   personality?: 'friendly' | 'pragmatic' | 'none' | null;
+  permissionsMode?: PermissionsMode | null;
   accessPreset?: 'read-only' | 'default' | 'full-access' | null;
   approvalPolicy?: string | null;
   sandboxMode?: string | null;
+  approvalsReviewer?: ApprovalsReviewer | null;
   locale: string | null;
   metadata: Record<string, unknown>;
   updatedAt: number;

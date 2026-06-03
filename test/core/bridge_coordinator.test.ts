@@ -1663,7 +1663,7 @@ test('/status reports when no bridge session is bound yet', async () => {
   assert.ok(lines.includes('默认工作目录：（未设置）'));
   assert.ok(lines.includes('模型：gpt-5.4'));
   assert.ok(lines.includes('推理强度：'));
-  assert.ok(lines.includes('权限预设：'));
+  assert.ok(lines.some((line) => line.startsWith('权限模式：')));
   assert.ok(lines.includes('完整信息：/status details'));
 });
 
@@ -1681,7 +1681,7 @@ test('/status uses English output when locale is set to en', async () => {
   assert.ok(lines.includes('Default working directory: (not set)'));
   assert.ok(lines.includes('Model: gpt-5.4'));
   assert.ok(lines.includes('Reasoning effort: '));
-  assert.ok(lines.includes('Access preset: '));
+  assert.ok(lines.some((line) => line.startsWith('Permissions mode: ')));
   assert.ok(lines.includes('More details: /status details'));
 });
 
@@ -1737,7 +1737,7 @@ test('/status includes active-turn state when a session is idle', async () => {
   assert.ok(lines.includes('速度模式：normal'));
   assert.ok(lines.includes('模型：gpt-5.4'));
   assert.ok(lines.includes('推理强度：'));
-  assert.ok(lines.includes('权限预设：'));
+  assert.ok(lines.some((line) => line.startsWith('权限模式：')));
   assert.ok(lines.includes('完整信息：/status details'));
   assert.ok(lines.every((line) => !/Scope：/.test(line)));
   assert.ok(lines.every((line) => !/当前 Turn：/.test(line)));
@@ -5675,7 +5675,7 @@ test('slash commands support -help, -helps, and --help variants', async () => {
 
     const body = result.messages[0]?.text ?? '';
     assert.match(body, /命令：\/permissions/);
-    assert.match(body, /\/permissions <read-only\|default\|full-access>/);
+    assert.match(body, /\/permissions <default-permissions\|auto-review\|full-access\|custom>/);
   }
 });
 
@@ -6282,7 +6282,7 @@ test('bridge coordinator shows command-specific blocked messages while a turn is
     ['/provider compat-default', '当前有回复在进行中，暂时不能切换 provider。请先等待，或使用 /stop 中断。'],
     ['/model gpt-5.4', '当前有回复在进行中，暂时不能切换模型。请先等待，或使用 /stop 中断。'],
     ['/personality friendly', '当前有回复在进行中，暂时不能切换 personality。请先等待，或使用 /stop 中断。'],
-    ['/permissions full-access', '当前有回复在进行中，暂时不能切换权限预设。请先等待，或使用 /stop 中断。'],
+    ['/permissions full-access', '当前有回复在进行中，暂时不能切换权限模式。请先等待，或使用 /stop 中断。'],
     ['/reconnect', '当前有回复在进行中，暂时不能刷新当前 Codex 会话。请先等待，或使用 /stop 中断。'],
     ['/restart', '当前有回复在进行中，暂时不能重启桥接。请先等待，或使用 /stop 中断。'],
   ];
@@ -6553,7 +6553,7 @@ test('/provider keeps WeChat-facing command UX stable across multiple provider p
     assert.ok(statusLines.includes('速度模式：normal'));
     assert.ok(statusLines.includes('模型：gpt-5.4'));
     assert.ok(statusLines.includes('推理强度：'));
-    assert.ok(statusLines.includes('权限预设：'));
+    assert.ok(statusLines.some((line) => line.startsWith('权限模式：')));
     assert.ok(statusLines.includes('完整信息：/status details'));
     assert.ok(statusLines.every((line) => !/Scope：/.test(line)));
     assert.ok(statusLines.every((line) => !/当前 Turn：/.test(line)));
@@ -12827,7 +12827,7 @@ test('ordinary messages after /stop lazily resume the same thread when Codex ask
   assert.equal((settings?.metadata?.lastStopCheckpoint as any) ?? null, null);
 });
 
-test('/permissions shows current access settings and updates the preset for the next turn', async () => {
+test('/permissions shows official four-mode access settings and updates the mode for the next turn', async () => {
   const { runtime, openai } = makeRuntime();
 
   await runtime.services.bridgeCoordinator.handleInboundEvent({
@@ -12842,17 +12842,20 @@ test('/permissions shows current access settings and updates the preset for the 
     text: '/permissions',
   });
 
-  assert.equal(statusBefore.messages[0]?.text ?? '', '当前权限预设：default');
+  assert.equal(statusBefore.messages[0]?.text ?? '', '当前权限模式：请求批准');
   assert.equal(statusBefore.messages[1]?.text ?? '', '审批策略：on-request');
   assert.equal(statusBefore.messages[2]?.text ?? '', '沙箱模式：workspace-write');
-  assert.equal(statusBefore.messages[4]?.text ?? '', '可选命令：');
-  assert.equal(statusBefore.messages[5]?.text ?? '', '- /permissions read-only');
-  assert.equal(statusBefore.messages[6]?.text ?? '', '- /permissions default');
-  assert.equal(statusBefore.messages[7]?.text ?? '', '- /permissions full-access');
-  assert.equal(statusBefore.messages[9]?.text ?? '', '说明：');
-  assert.equal(statusBefore.messages[10]?.text ?? '', '- read-only：按需审批 + 只读');
-  assert.equal(statusBefore.messages[11]?.text ?? '', '- default：按需审批 + 工作区可写');
-  assert.equal(statusBefore.messages[12]?.text ?? '', '- full-access：不审批 + 完全访问');
+  assert.equal(statusBefore.messages[3]?.text ?? '', '审查人：user');
+  assert.equal(statusBefore.messages[5]?.text ?? '', '可选命令：');
+  assert.equal(statusBefore.messages[6]?.text ?? '', '- /permissions default-permissions');
+  assert.equal(statusBefore.messages[7]?.text ?? '', '- /permissions auto-review');
+  assert.equal(statusBefore.messages[8]?.text ?? '', '- /permissions full-access');
+  assert.equal(statusBefore.messages[9]?.text ?? '', '- /permissions custom');
+  assert.equal(statusBefore.messages[11]?.text ?? '', '说明：');
+  assert.equal(statusBefore.messages[12]?.text ?? '', '- default-permissions：工作区可写，越界时请求批准');
+  assert.equal(statusBefore.messages[13]?.text ?? '', '- auto-review：工作区可写，由审查代理处理合格审批');
+  assert.equal(statusBefore.messages[14]?.text ?? '', '- full-access：不审批 + 完全访问');
+  assert.equal(statusBefore.messages[15]?.text ?? '', '- custom：使用本地 config.toml 配置');
 
   const updated = await runtime.services.bridgeCoordinator.handleInboundEvent({
     platform: 'weixin',
@@ -12860,10 +12863,11 @@ test('/permissions shows current access settings and updates the preset for the 
     text: '/permissions full-access',
   });
 
-  assert.equal(updated.messages[0]?.text ?? '', '已切换权限预设：full-access');
+  assert.equal(updated.messages[0]?.text ?? '', '已切换权限模式：完全访问权限');
   assert.equal(updated.messages[1]?.text ?? '', '审批策略：never');
   assert.equal(updated.messages[2]?.text ?? '', '沙箱模式：danger-full-access');
-  assert.equal(updated.messages[3]?.text ?? '', '下一轮生效。');
+  assert.equal(updated.messages[3]?.text ?? '', '审查人：不适用');
+  assert.equal(updated.messages[4]?.text ?? '', '下一轮生效。');
 
   await runtime.services.bridgeCoordinator.handleInboundEvent({
     platform: 'weixin',
@@ -12872,6 +12876,7 @@ test('/permissions shows current access settings and updates the preset for the 
   });
 
   const lastTurn = openai.startTurnCalls.at(-1);
+  assert.equal(lastTurn?.sessionSettings?.permissionsMode, 'full-access');
   assert.equal(lastTurn?.sessionSettings?.accessPreset, 'full-access');
   assert.equal(lastTurn?.sessionSettings?.approvalPolicy, 'never');
   assert.equal(lastTurn?.sessionSettings?.sandboxMode, 'danger-full-access');
@@ -12892,7 +12897,44 @@ test('/permissions rejects unknown presets', async () => {
     text: '/permissions yolo',
   });
 
-  assert.equal(result.messages[0]?.text ?? '', '用法：/permissions [read-only|default|full-access]');
+  assert.equal(result.messages[0]?.text ?? '', '用法：/permissions [default-permissions|auto-review|full-access|custom]');
+});
+
+test('/permissions supports auto-review and custom official modes', async () => {
+  const { runtime, openai } = makeRuntime();
+
+  await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-user-1',
+    text: 'hello',
+  });
+
+  const autoReview = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-user-1',
+    text: '/permissions auto-review',
+  });
+  assert.equal(autoReview.messages[0]?.text ?? '', '已切换权限模式：替我审批');
+  assert.equal(autoReview.messages[3]?.text ?? '', '审查人：auto_review');
+
+  await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-user-1',
+    text: 'hello auto-review',
+  });
+  const autoReviewTurn = openai.startTurnCalls.at(-1);
+  assert.equal(autoReviewTurn?.sessionSettings?.permissionsMode, 'auto-review');
+  assert.equal(autoReviewTurn?.sessionSettings?.approvalsReviewer, 'auto_review');
+
+  const custom = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-user-1',
+    text: '/permissions custom',
+  });
+  assert.equal(custom.messages[0]?.text ?? '', '已切换权限模式：自定义 (config.toml)');
+  assert.equal(custom.messages[1]?.text ?? '', '审批策略：由配置文件决定');
+  assert.equal(custom.messages[2]?.text ?? '', '沙箱模式：由配置文件决定');
+  assert.equal(custom.messages[3]?.text ?? '', '审查人：由配置文件决定');
 });
 
 test('bridge coordinator converts Codex turn timeout into a user-visible timeout state', async () => {

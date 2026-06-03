@@ -483,6 +483,8 @@ test('CodexAppClient startTurn sends explicit default collaboration settings pay
     inputText: 'hello',
     model: 'gpt-5.4',
     effort: 'medium',
+    approvalPolicy: 'on-request',
+    sandboxMode: 'workspace-write',
     collaborationMode: 'default',
     timeoutMs: 10,
   });
@@ -511,6 +513,57 @@ test('CodexAppClient startTurn sends explicit default collaboration settings pay
     text_elements: [],
   }]);
   assert.equal('personality' in turnStart, false);
+});
+
+test('CodexAppClient startTurn omits permission overrides when none are provided and forwards config overrides', async () => {
+  const client = new CodexAppClient({
+    codexCliBin: 'codex',
+  });
+
+  const calls = [];
+  client.request = async (method, params) => {
+    calls.push([method, params]);
+    if (method === 'turn/start') {
+      return { turn: { id: 'turn-2' } };
+    }
+    if (method === 'thread/read') {
+      return {
+        thread: {
+          id: 'thread-1',
+          name: 'Thread 1',
+          turns: [{
+            id: 'turn-2',
+            status: 'completed',
+            items: [{
+              type: 'assistant_message',
+              text: 'done',
+            }],
+          }],
+        },
+      };
+    }
+    return {};
+  };
+
+  await client.startTurn({
+    threadId: 'thread-1',
+    inputText: 'hello',
+    model: 'gpt-5.4',
+    configOverrides: {
+      approvals_reviewer: 'auto_review',
+    },
+    timeoutMs: 10,
+  });
+
+  const turnStart = calls.find(([method]) => method === 'turn/start')?.[1];
+  assert.equal('approvalPolicy' in turnStart, false);
+  assert.equal('sandboxPolicy' in turnStart, false);
+  assert.deepEqual(turnStart.config, {
+    approvals_reviewer: 'auto_review',
+  });
+  assert.deepEqual(turnStart.settings, {
+    model: 'gpt-5.4',
+  });
 });
 
 test('CodexAppClient startTurn omits null collaboration setting strings', async () => {

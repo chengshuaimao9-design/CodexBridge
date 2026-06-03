@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { ConfigurationError, NotFoundError } from './errors.js';
+import { buildPermissionsSettingsUpdate } from './permissions_mode.js';
 import { createI18n, type Translator } from '../i18n/index.js';
 import type { BridgeSession, PlatformScopeRef, SessionSettings, ThreadMetadata } from '../types/core.js';
 import type {
@@ -129,9 +130,10 @@ export class BridgeSessionService {
       providerProfileId,
       cwd = null,
       title = null,
-      initialSettings = {},
+      initialSettings: rawInitialSettings = {},
       providerStartOptions = {},
     } = options;
+    const initialSettings = withNormalizedInitialPermissionsSettings(rawInitialSettings);
     const providerProfile = this.providerProfiles.get(providerProfileId);
     if (!providerProfile) {
       throw new NotFoundError(this.i18n.t('service.unknownProviderProfile', { id: providerProfileId }));
@@ -142,7 +144,10 @@ export class BridgeSessionService {
       providerProfile,
       cwd,
       title: startTitle,
-      metadata: providerStartOptions,
+      metadata: {
+        ...providerStartOptions,
+        sessionSettings: initialSettings,
+      },
     });
     const resolvedTitle = normalizeThreadTitle(thread.title) ?? startTitle;
     const now = this.now();
@@ -164,9 +169,11 @@ export class BridgeSessionService {
       serviceTier: initialSettings.serviceTier ?? null,
       collaborationMode: initialSettings.collaborationMode ?? null,
       personality: initialSettings.personality ?? null,
+      permissionsMode: initialSettings.permissionsMode ?? null,
       accessPreset: initialSettings.accessPreset ?? null,
       approvalPolicy: initialSettings.approvalPolicy ?? null,
       sandboxMode: initialSettings.sandboxMode ?? null,
+      approvalsReviewer: initialSettings.approvalsReviewer ?? null,
       locale: initialSettings.locale ?? null,
       metadata: initialSettings.metadata ?? {},
       updatedAt: now,
@@ -179,9 +186,10 @@ export class BridgeSessionService {
       providerProfileId,
       cwd = null,
       title = null,
-      initialSettings = {},
+      initialSettings: rawInitialSettings = {},
       providerStartOptions = {},
     } = options;
+    const initialSettings = withNormalizedInitialPermissionsSettings(rawInitialSettings);
     const providerProfile = this.providerProfiles.get(providerProfileId);
     if (!providerProfile) {
       throw new NotFoundError(this.i18n.t('service.unknownProviderProfile', { id: providerProfileId }));
@@ -192,7 +200,10 @@ export class BridgeSessionService {
       providerProfile,
       cwd,
       title: startTitle,
-      metadata: providerStartOptions,
+      metadata: {
+        ...providerStartOptions,
+        sessionSettings: initialSettings,
+      },
     });
     const resolvedTitle = normalizeThreadTitle(thread.title) ?? startTitle;
     const now = this.now();
@@ -213,9 +224,11 @@ export class BridgeSessionService {
       serviceTier: initialSettings.serviceTier ?? null,
       collaborationMode: initialSettings.collaborationMode ?? null,
       personality: initialSettings.personality ?? null,
+      permissionsMode: initialSettings.permissionsMode ?? null,
       accessPreset: initialSettings.accessPreset ?? null,
       approvalPolicy: initialSettings.approvalPolicy ?? null,
       sandboxMode: initialSettings.sandboxMode ?? null,
+      approvalsReviewer: initialSettings.approvalsReviewer ?? null,
       locale: initialSettings.locale ?? null,
       metadata: initialSettings.metadata ?? {},
       updatedAt: now,
@@ -272,9 +285,11 @@ export class BridgeSessionService {
     { providerProfileId, codexThreadId }: { providerProfileId: string; codexThreadId: string },
     { initialSettings = {} }: { initialSettings?: Partial<SessionSettings> } = {},
   ): Promise<BridgeSession> {
+    const normalizedInitialSettings = withNormalizedInitialPermissionsSettings(initialSettings);
     const existing = this.findSessionByProviderThread(providerProfileId, codexThreadId);
     if (existing) {
       this.sessionRouter.bindScope(scopeRef, existing.id, this.now());
+      this.upsertSessionSettings(existing.id, normalizedInitialSettings);
       return existing;
     }
     const providerProfile = this.providerProfiles.get(providerProfileId);
@@ -315,12 +330,74 @@ export class BridgeSessionService {
       reasoningEffort: null,
       serviceTier: null,
       personality: null,
+      permissionsMode: null,
       accessPreset: null,
       approvalPolicy: null,
       sandboxMode: null,
-      locale: initialSettings.locale ?? null,
+      approvalsReviewer: null,
+      locale: normalizedInitialSettings.locale ?? null,
       metadata: {},
-      ...initialSettings,
+      ...normalizedInitialSettings,
+      updatedAt: now,
+    });
+    return session;
+  }
+
+  async ensureSessionForProviderThread(
+    { providerProfileId, codexThreadId }: { providerProfileId: string; codexThreadId: string },
+    { initialSettings = {} }: { initialSettings?: Partial<SessionSettings> } = {},
+  ): Promise<BridgeSession> {
+    const normalizedInitialSettings = withNormalizedInitialPermissionsSettings(initialSettings);
+    const existing = this.findSessionByProviderThread(providerProfileId, codexThreadId);
+    if (existing) {
+      this.upsertSessionSettings(existing.id, normalizedInitialSettings);
+      return existing;
+    }
+    const providerProfile = this.providerProfiles.get(providerProfileId);
+    if (!providerProfile) {
+      throw new NotFoundError(this.i18n.t('service.unknownProviderProfile', { id: providerProfileId }));
+    }
+    const providerPlugin = this.providerRegistry.getProvider(providerProfile.providerKind);
+    const thread = await providerPlugin.readThread({
+      providerProfile,
+      threadId: codexThreadId,
+      includeTurns: false,
+    });
+    if (!thread) {
+      throw new NotFoundError(this.i18n.t('service.unknownProviderThread', {
+        providerProfileId,
+        threadId: codexThreadId,
+      }));
+    }
+    const now = this.now();
+    const session: BridgeSession = {
+      id: crypto.randomUUID(),
+      providerProfileId: providerProfile.id,
+      codexThreadId: thread.threadId,
+      cwd: thread.cwd ?? null,
+      title: this.resolveThreadDisplayTitle({
+        providerProfileId: providerProfile.id,
+        threadId: thread.threadId,
+        providerTitle: thread.title ?? null,
+      }),
+      createdAt: now,
+      updatedAt: thread.updatedAt ?? now,
+    };
+    this.bridgeSessions.save(session);
+    this.sessionSettings.save({
+      bridgeSessionId: session.id,
+      model: null,
+      reasoningEffort: null,
+      serviceTier: null,
+      personality: null,
+      permissionsMode: null,
+      accessPreset: null,
+      approvalPolicy: null,
+      sandboxMode: null,
+      approvalsReviewer: null,
+      locale: normalizedInitialSettings.locale ?? null,
+      metadata: {},
+      ...normalizedInitialSettings,
       updatedAt: now,
     });
     return session;
@@ -765,6 +842,22 @@ function isBridgeInternalThread(thread: { title?: string | null; preview?: strin
 function normalizeCwd(value: string | null | undefined): string | null {
   const normalized = typeof value === 'string' ? value.trim() : '';
   return normalized || null;
+}
+
+function withNormalizedInitialPermissionsSettings(initialSettings: Partial<SessionSettings>): Partial<SessionSettings> {
+  const hasExplicitPermissions =
+    initialSettings.permissionsMode != null
+    || initialSettings.accessPreset != null
+    || initialSettings.approvalPolicy != null
+    || initialSettings.sandboxMode != null
+    || initialSettings.approvalsReviewer != null;
+  if (hasExplicitPermissions) {
+    return initialSettings;
+  }
+  return {
+    ...buildPermissionsSettingsUpdate('default-permissions'),
+    ...initialSettings,
+  };
 }
 
 function normalizeThreadTitle(value: string | null | undefined): string | null {

@@ -7,6 +7,7 @@ import {
 import { refreshOpenAITokens } from './oauth_device.js';
 import type { CodexTurnInput } from './app_client.js';
 import { CodexCliReviewRunner } from './review_runner.js';
+import { buildCodexPermissionRuntimeOverrides } from '../../core/permissions_mode.js';
 import { resolveReasoningEffortForProvider } from '../shared/thinking_policy.js';
 import { buildTurnArtifactDeveloperInstructions } from '../../core/turn_artifacts.js';
 import type {
@@ -124,18 +125,27 @@ export class CodexProviderPlugin {
     cwd = null,
     title = null,
     ephemeral = null,
+    metadata = {},
   }: {
     providerProfile: ProviderProfile;
     cwd?: string | null;
     title?: string | null;
     ephemeral?: boolean | null;
+    metadata?: Record<string, unknown>;
   }): Promise<ProviderThreadStartResult> {
     const client = await this.ensureClient(providerProfile);
     const modelInfo = await this.resolveModelInfo(providerProfile, client, null);
+    const sessionSettings = isSessionSettingsLike(metadata?.sessionSettings)
+      ? metadata.sessionSettings
+      : null;
+    const permissionOverrides = buildCodexPermissionRuntimeOverrides(sessionSettings);
     return client.startThread({
       cwd,
       title,
       model: modelInfo?.model ?? null,
+      approvalPolicy: permissionOverrides.approvalPolicy,
+      sandboxMode: permissionOverrides.sandboxMode,
+      configOverrides: permissionOverrides.configOverrides,
       ephemeral,
     });
   }
@@ -349,6 +359,7 @@ export class CodexProviderPlugin {
     const turnInput = buildCodexTurnInput(event, inputText);
     const developerInstructions = buildDeveloperInstructions(event);
     const personality = normalizeCodexPersonality(sessionSettings?.personality ?? null);
+    const permissionOverrides = buildCodexPermissionRuntimeOverrides(sessionSettings);
     const result = await client.startTurn({
       threadId: bridgeSession.codexThreadId,
       inputText: turnInput[0]?.type === 'text' ? turnInput[0].text : inputText,
@@ -358,8 +369,9 @@ export class CodexProviderPlugin {
       effort,
       serviceTier: normalizeCodexServiceTier(sessionSettings?.serviceTier ?? null),
       personality,
-      approvalPolicy: sessionSettings?.approvalPolicy ?? 'on-request',
-      sandboxMode: sessionSettings?.sandboxMode ?? 'workspace-write',
+      approvalPolicy: permissionOverrides.approvalPolicy,
+      sandboxMode: permissionOverrides.sandboxMode,
+      configOverrides: permissionOverrides.configOverrides,
       collaborationMode: normalizeCodexCollaborationMode(sessionSettings?.collaborationMode ?? null),
       developerInstructions,
       onProgress,
@@ -1229,6 +1241,10 @@ function normalizeOutputMedia(result: ProviderTurnResult) {
       }));
   }
   return Array.isArray(result?.outputMedia) ? result.outputMedia : [];
+}
+
+function isSessionSettingsLike(value: unknown): value is SessionSettings {
+  return typeof value === 'object' && value !== null;
 }
 
 function normalizeCodexServiceTier(value: string | null | undefined): string | null {

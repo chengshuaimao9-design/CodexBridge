@@ -1,5 +1,9 @@
 import type { InboundAttachmentKind } from './platform.js';
 
+export type PermissionsMode = 'default-permissions' | 'auto-review' | 'full-access' | 'custom';
+
+export type ApprovalsReviewer = 'user' | 'auto_review';
+
 export interface PlatformScopeRef {
   platform: string;
   externalScopeId: string;
@@ -22,9 +26,11 @@ export interface SessionSettings {
   serviceTier: string | null;
   collaborationMode?: 'plan' | 'default' | null;
   personality?: 'friendly' | 'pragmatic' | 'none' | null;
+  permissionsMode?: PermissionsMode | null;
   accessPreset?: 'read-only' | 'default' | 'full-access' | null;
   approvalPolicy?: string | null;
   sandboxMode?: string | null;
+  approvalsReviewer?: ApprovalsReviewer | null;
   locale: string | null;
   metadata: Record<string, unknown>;
   updatedAt: number;

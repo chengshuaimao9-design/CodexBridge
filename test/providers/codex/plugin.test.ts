@@ -40,6 +40,8 @@ function makeSessionSettings(overrides = {}) {
     serviceTier: null,
     collaborationMode: null,
     personality: null,
+    permissionsMode: null,
+    approvalsReviewer: null,
     approvalPolicy: null,
     sandboxMode: null,
     locale: null,
@@ -1853,4 +1855,79 @@ test('CodexProviderPlugin forwards session personality to the app client', async
   });
 
   assert.equal(seenPersonality, 'friendly');
+});
+
+test('CodexProviderPlugin maps official four-mode permissions into runtime overrides', async () => {
+  const seenThreadStarts: any[] = [];
+  const seenTurnStarts: any[] = [];
+  const plugin = makePlugin(() => ({
+    async start() {},
+    async startThread(params: any) {
+      seenThreadStarts.push(params);
+      return { threadId: 'thread-1', title: 'Thread 1', cwd: params.cwd ?? null };
+    },
+    async startTurn(params: any) {
+      seenTurnStarts.push(params);
+      return {
+        outputText: 'done',
+        threadId: params.threadId,
+        title: null,
+      };
+    },
+    async listThreads() {
+      return { items: [], nextCursor: null };
+    },
+    async listModels() {
+      return [{
+        id: 'gpt-5.5',
+        model: 'gpt-5.5',
+        displayName: 'GPT-5.5',
+        description: '',
+        isDefault: true,
+        supportedReasoningEfforts: ['medium'],
+        defaultReasoningEffort: 'medium',
+      }];
+    },
+  }));
+
+  await plugin.startThread({
+    providerProfile: makeProfile(),
+    cwd: '/tmp/work',
+    title: 'Thread 1',
+    metadata: {
+      sessionSettings: makeSessionSettings({
+        permissionsMode: 'auto-review',
+        accessPreset: 'default',
+        approvalPolicy: 'on-request',
+        sandboxMode: 'workspace-write',
+        approvalsReviewer: 'auto_review',
+      }),
+    },
+  });
+  assert.equal(seenThreadStarts[0]?.approvalPolicy, 'on-request');
+  assert.equal(seenThreadStarts[0]?.sandboxMode, 'workspace-write');
+  assert.deepEqual(seenThreadStarts[0]?.configOverrides, {
+    approvals_reviewer: 'auto_review',
+  });
+
+  await plugin.startTurn({
+    providerProfile: makeProfile(),
+    bridgeSession: makeBridgeSession(),
+    sessionSettings: makeSessionSettings({
+      permissionsMode: 'custom',
+      accessPreset: null,
+      approvalPolicy: null,
+      sandboxMode: null,
+      approvalsReviewer: null,
+    }),
+    event: {
+      platform: 'weixin',
+      externalScopeId: 'wxid_1',
+      text: 'hello',
+    },
+    inputText: 'hello',
+  });
+  assert.equal(seenTurnStarts[0]?.approvalPolicy, null);
+  assert.equal(seenTurnStarts[0]?.sandboxMode, null);
+  assert.equal(seenTurnStarts[0]?.configOverrides, null);
 });

@@ -324,25 +324,73 @@ export class AssistantRecordService {
     }, { now });
   }
 
-  claimDueReminders(platform: string, now = this.now()): AssistantRecord[] {
-    const due = this.assistantRecords
+  listDueReminders(platform: string, now = this.now()): AssistantRecord[] {
+    return this.assistantRecords
       .list()
       .filter((record) => record.platform === platform)
       .filter((record) => record.type === 'reminder')
       .filter((record) => record.status === 'active')
       .filter((record) => typeof record.remindAt === 'number' && record.remindAt <= now)
       .filter((record) => !record.lastRemindedAt || record.lastRemindedAt < (record.remindAt ?? 0))
+      .filter((record) => {
+        const retryAfter = readReminderDeliveryRetryAfter(record);
+        return retryAfter === null || retryAfter <= now;
+      })
       .sort((left, right) => (left.remindAt ?? 0) - (right.remindAt ?? 0));
+  }
+
+  claimDueReminders(platform: string, now = this.now()): AssistantRecord[] {
+    const due = this.listDueReminders(platform, now);
     for (const record of due) {
-      const nextReminderAt = computeNextReminderAt(record, now);
-      this.updateRecord(record.id, {
-        lastRemindedAt: now,
-        remindAt: nextReminderAt,
-        status: nextReminderAt ? 'active' : 'done',
-        completedAt: nextReminderAt ? record.completedAt : now,
-      });
+      this.markReminderDelivered(record.id, { deliveredAt: now });
     }
     return due;
+  }
+
+  markReminderDelivered(id: string, params: { deliveredAt?: number | null } = {}): AssistantRecord {
+    const record = this.assistantRecords.getById(id);
+    if (!record) {
+      throw new Error(`Unknown assistant record: ${id}`);
+    }
+    const deliveredAt = normalizeTimestamp(params.deliveredAt) ?? this.now();
+    const nextReminderAt = computeNextReminderAt(record, deliveredAt);
+    return this.updateRecord(id, {
+      lastRemindedAt: deliveredAt,
+      remindAt: nextReminderAt,
+      status: nextReminderAt ? 'active' : 'done',
+      completedAt: nextReminderAt ? record.completedAt : deliveredAt,
+      parsedJson: withoutReminderDeliveryState(record.parsedJson),
+    });
+  }
+
+  markReminderDeliveryDeferred(id: string, params: {
+    error?: string | null;
+    errorCode?: number | null;
+    failedAt?: number | null;
+    retryAfter?: number | null;
+  } = {}): AssistantRecord {
+    const record = this.assistantRecords.getById(id);
+    if (!record) {
+      throw new Error(`Unknown assistant record: ${id}`);
+    }
+    const failedAt = normalizeTimestamp(params.failedAt) ?? this.now();
+    const retryAfter = normalizeTimestamp(params.retryAfter);
+    const previous = readReminderDeliveryState(record.parsedJson);
+    return this.updateRecord(id, {
+      parsedJson: {
+        ...(record.parsedJson ?? {}),
+        codexbridgeDelivery: {
+          kind: 'reminder',
+          attempts: previous.attempts + 1,
+          lastFailureAt: failedAt,
+          retryAfter,
+          error: normalizeNullableString(params.error),
+          errorCode: typeof params.errorCode === 'number' && Number.isFinite(params.errorCode)
+            ? params.errorCode
+            : null,
+        },
+      },
+    });
   }
 
   private async archiveUploadItems(record: AssistantRecord, items: UploadBatchItem[]): Promise<AssistantAttachment[]> {
@@ -1138,6 +1186,42 @@ function computeNextReminderAt(record: AssistantRecord, now: number): number | n
     return nextWeekly(new Date(now), Number(weekly[1]), Number(weekly[2]), Number(weekly[3]), true);
   }
   return null;
+}
+
+function readReminderDeliveryRetryAfter(record: AssistantRecord): number | null {
+  return normalizeTimestamp(readReminderDeliveryState(record.parsedJson).retryAfter);
+}
+
+function readReminderDeliveryState(parsedJson: Record<string, unknown> | null | undefined): {
+  attempts: number;
+  retryAfter: number | null;
+} {
+  const delivery = parsedJson?.codexbridgeDelivery;
+  if (!delivery || typeof delivery !== 'object' || Array.isArray(delivery)) {
+    return {
+      attempts: 0,
+      retryAfter: null,
+    };
+  }
+  const state = delivery as Record<string, unknown>;
+  const attempts = typeof state.attempts === 'number' && Number.isFinite(state.attempts)
+    ? Math.max(0, Math.floor(state.attempts))
+    : 0;
+  return {
+    attempts,
+    retryAfter: normalizeTimestamp(state.retryAfter),
+  };
+}
+
+function withoutReminderDeliveryState(
+  parsedJson: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!parsedJson || !Object.prototype.hasOwnProperty.call(parsedJson, 'codexbridgeDelivery')) {
+    return parsedJson ? { ...parsedJson } : null;
+  }
+  const next = { ...parsedJson };
+  delete next.codexbridgeDelivery;
+  return Object.keys(next).length > 0 ? next : null;
 }
 
 function buildDayDirectory(timestamp: number): string {

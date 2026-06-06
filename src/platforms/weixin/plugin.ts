@@ -425,6 +425,7 @@ export class WeixinPlatformPlugin implements Pick<PlatformPluginContract, 'id' |
         failedIndex: 0,
         failedText: String(content ?? '').trim(),
         error: error instanceof Error ? error.message : String(error),
+        errorCode: SESSION_EXPIRED_ERRCODE,
       };
     }
     const deliveries = this.buildTextDeliveries({

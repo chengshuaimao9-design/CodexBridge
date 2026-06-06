@@ -45,6 +45,7 @@ interface RuntimeResponse {
       delivered?: boolean | null;
       rateLimited?: boolean | null;
       error?: string | null;
+      errorCode?: number | null;
     } | null;
   } | null;
 }
@@ -118,6 +119,7 @@ interface FinalDelivery {
   delivered: boolean;
   rateLimited: boolean;
   error: string | null;
+  errorCode?: number | null;
 }
 
 interface PendingInboundMerge {
@@ -155,6 +157,7 @@ export class WeixinBridgeRuntime {
   static readonly DEFAULT_TYPING_KEEPALIVE_MS = 8_000;
   static readonly PREVIEW_MIN_TARGET_BYTES = 500;
   static readonly AUTOMATION_RATE_LIMIT_RETRY_MS = 10 * 60 * 1000;
+  static readonly DELIVERY_SESSION_EXPIRED_RETRY_MS = 60 * 1000;
 
   platformPlugin: PlatformPluginLike;
 
@@ -185,6 +188,8 @@ export class WeixinBridgeRuntime {
   backgroundTasks: Set<Promise<RuntimeResponse>>;
 
   scheduledAgentJobIds: Set<string>;
+
+  scheduledAssistantReminderIds: Set<string>;
 
   scopeChains: Map<string, Promise<RuntimeResponse>>;
 
@@ -237,6 +242,7 @@ export class WeixinBridgeRuntime {
     this.poller = null;
     this.backgroundTasks = new Set();
     this.scheduledAgentJobIds = new Set();
+    this.scheduledAssistantReminderIds = new Set();
     this.scopeChains = new Map();
     this.pendingInboundMerges = new Map();
     this.pendingScopeNotices = new Map();
@@ -583,6 +589,7 @@ export class WeixinBridgeRuntime {
             delivered: finalDelivery.delivered,
             rateLimited: finalDelivery.rateLimited,
             error: finalDelivery.error,
+            errorCode: finalDelivery.errorCode ?? null,
           },
         };
         debugRuntime('final_delivery_decision', {
@@ -604,6 +611,7 @@ export class WeixinBridgeRuntime {
             delivered: finalDelivery.delivered,
             rateLimited: finalDelivery.rateLimited,
             error: finalDelivery.error,
+            errorCode: finalDelivery.errorCode ?? null,
           },
         };
         debugRuntime('final_delivery_decision', {
@@ -883,6 +891,7 @@ export class WeixinBridgeRuntime {
         rateLimited: this.isRateLimitedDeliveryFailure(failureDelivery)
           || this.isRateLimitedDeliveryFailure(partialCommitDelivery),
         error: failureDelivery.error || null,
+        errorCode: failureDelivery.errorCode ?? partialCommitDelivery?.errorCode ?? null,
       };
     }
     if (!normalizedFinal) {
@@ -974,6 +983,7 @@ export class WeixinBridgeRuntime {
       delivered: false,
       rateLimited: this.isRateLimitedDeliveryFailure(lastFailedDelivery),
       error: lastFailedDelivery?.error || null,
+      errorCode: lastFailedDelivery?.errorCode ?? null,
     };
   }
 
@@ -1404,10 +1414,24 @@ export class WeixinBridgeRuntime {
         }
       }
     }
-    const reminders = this.assistantRecords?.claimDueReminders?.('weixin') ?? [];
+    const reminders = this.assistantRecords?.listDueReminders?.('weixin')
+      ?? this.assistantRecords?.claimDueReminders?.('weixin')
+      ?? [];
     if (Array.isArray(reminders)) {
       for (const reminder of reminders) {
-        const task = this.deliverAssistantReminder(reminder);
+        const reminderId = typeof reminder?.id === 'string' ? reminder.id : '';
+        if (reminderId && this.scheduledAssistantReminderIds.has(reminderId)) {
+          continue;
+        }
+        if (reminderId) {
+          this.scheduledAssistantReminderIds.add(reminderId);
+        }
+        const task = this.deliverAssistantReminder(reminder)
+          .finally(() => {
+            if (reminderId) {
+              this.scheduledAssistantReminderIds.delete(reminderId);
+            }
+          });
         this.trackBackgroundTask(task);
       }
     }
@@ -1422,10 +1446,27 @@ export class WeixinBridgeRuntime {
     if (!content) {
       return { type: 'message', messages: [] };
     }
-    await this.sendTextWithRetry({
+    const delivery = await this.sendTextWithRetry({
       externalScopeId: scopeId,
       content,
     });
+    const reminderId = typeof record?.id === 'string' ? record.id : '';
+    const deliveryFinishedAt = Date.now();
+    if (delivery.success) {
+      if (!reminderId) {
+        return { type: 'message', messages: [{ text: content }] };
+      }
+      this.assistantRecords?.markReminderDelivered?.(reminderId, {
+        deliveredAt: deliveryFinishedAt,
+      });
+    } else if (reminderId) {
+      this.assistantRecords?.markReminderDeliveryDeferred?.(reminderId, {
+        failedAt: deliveryFinishedAt,
+        retryAfter: deliveryFinishedAt + this.resolveDeliveryRetryMs(delivery),
+        error: delivery.error || this.i18n.t('runtime.error.unknownDeliveryFailure'),
+        errorCode: delivery.errorCode ?? null,
+      });
+    }
     return { type: 'message', messages: [{ text: content }] };
   }
 
@@ -1595,10 +1636,16 @@ export class WeixinBridgeRuntime {
         });
       }
       const deliveryMeta = response?.meta?.runtimeDelivery ?? null;
-      if (deliveryMeta?.delivered === false && deliveryMeta?.rateLimited) {
+      if (
+        deliveryMeta?.delivered === false
+        && (
+          deliveryMeta?.rateLimited
+          || this.isSessionExpiredDeliveryFailure(deliveryMeta)
+        )
+      ) {
         this.automationJobs?.deferJob?.(
           job.id,
-          Date.now() + WeixinBridgeRuntime.AUTOMATION_RATE_LIMIT_RETRY_MS,
+          Date.now() + this.resolveDeliveryRetryMs(deliveryMeta),
         );
         return response;
       }
@@ -1763,6 +1810,27 @@ export class WeixinBridgeRuntime {
     const message = String(detail?.error ?? '').trim();
     return /\b(?:ret|errcode)\b[^-\d]*-2\b/i.test(message)
       || /:\s*-2\b/.test(message);
+  }
+
+  isSessionExpiredDeliveryFailure(detail: { error?: string | null; errorCode?: number | null } | null | undefined): boolean {
+    const errorCode = typeof detail?.errorCode === 'number' ? detail.errorCode : null;
+    if (errorCode === -14) {
+      return true;
+    }
+    const message = String(detail?.error ?? '').trim();
+    return /\b(?:ret|errcode)\b[^-\d]*-14\b/i.test(message)
+      || /:\s*-14\b/.test(message)
+      || /session\s+(?:expired|paused)/i.test(message);
+  }
+
+  resolveDeliveryRetryMs(detail: { error?: string | null; errorCode?: number | null } | null | undefined): number {
+    if (this.isRateLimitedDeliveryFailure(detail)) {
+      return WeixinBridgeRuntime.AUTOMATION_RATE_LIMIT_RETRY_MS;
+    }
+    if (this.isSessionExpiredDeliveryFailure(detail)) {
+      return WeixinBridgeRuntime.DELIVERY_SESSION_EXPIRED_RETRY_MS;
+    }
+    return WeixinBridgeRuntime.DELIVERY_SESSION_EXPIRED_RETRY_MS;
   }
 
   describeDeliveryFailure(

@@ -30,6 +30,7 @@ interface RuntimeHarnessOptions {
   coordinator: any;
   automationJobs?: any;
   agentJobs?: any;
+  assistantRecords?: any;
   sendText: (payload: { externalScopeId: string; content: string }) => Promise<any> | any;
   sendMedia?: (payload: { externalScopeId: string; filePath: string; caption?: string | null }) => Promise<any> | any;
   sendTyping?: (payload: { externalScopeId: string; status: 'start' | 'stop' }) => Promise<void> | void;
@@ -47,6 +48,7 @@ function makeRuntime({
   coordinator,
   automationJobs = null,
   agentJobs = null,
+  assistantRecords = null,
   sendText,
   sendMedia,
   sendTyping,
@@ -104,6 +106,7 @@ function makeRuntime({
     bridgeCoordinator: coordinator,
     automationJobs,
     agentJobs,
+    assistantRecords,
     previewSoftTargetBytes,
     previewIntervalMs,
     typingKeepaliveMs,
@@ -785,6 +788,62 @@ test('WeixinBridgeRuntime defers automation jobs when final delivery is rate-lim
   assert.equal((deferredCalls[0]?.nextRunAt ?? 0) >= before + (10 * 60 * 1000), true);
 });
 
+test('WeixinBridgeRuntime defers automation jobs when final delivery session expires', async () => {
+  const deferredCalls: Array<{ id: string; nextRunAt: number }> = [];
+  const completedCalls: Array<{ id: string; resultPreview?: string | null; error?: string | null; deliveredAt?: number | null }> = [];
+  const job = {
+    id: 'auto-session-expired-1',
+    platform: 'weixin',
+    externalScopeId: 'wxid_1',
+    title: '会话过期巡检',
+    mode: 'standalone',
+    bridgeSessionId: 'session-auto-session-expired-1',
+    cwd: '/tmp/codexbridge-auto',
+    locale: 'zh-CN',
+    prompt: '发送巡检结果',
+  };
+  const runtime = makeRuntime({
+    automationJobs: {
+      claimDueJobs() {
+        return [job];
+      },
+      deferJob(id: string, nextRunAt: number) {
+        deferredCalls.push({ id, nextRunAt });
+      },
+      completeJob(id: string, payload: any) {
+        completedCalls.push({ id, ...payload });
+      },
+      resetRunningJobs() {},
+    },
+    sendText: async ({ content }) => ({
+      success: false,
+      deliveredCount: 0,
+      deliveredText: '',
+      failedIndex: 0,
+      failedText: content,
+      error: 'session expired (errcode -14)',
+      errorCode: -14,
+    }),
+    coordinator: {
+      async reconcileActiveTurn() {
+        return null;
+      },
+      async handleInboundEvent() {
+        return completeResponse('自动化执行完成。');
+      },
+    },
+  });
+
+  const before = Date.now();
+  await runtime.runAutomationSweep();
+  await runtime.waitForIdle();
+
+  assert.equal(completedCalls.length, 0);
+  assert.equal(deferredCalls.length, 1);
+  assert.equal(deferredCalls[0]?.id, 'auto-session-expired-1');
+  assert.equal((deferredCalls[0]?.nextRunAt ?? 0) >= before + 60_000, true);
+});
+
 test('WeixinBridgeRuntime defers due automation jobs when the scope is busy', async () => {
   const deferredCalls: Array<{ id: string; nextRunAt: number }> = [];
   const job = {
@@ -830,6 +889,106 @@ test('WeixinBridgeRuntime defers due automation jobs when the scope is busy', as
   assert.equal(deferredCalls.length, 1);
   assert.equal(deferredCalls[0]?.id, 'auto-2');
   assert.equal(typeof deferredCalls[0]?.nextRunAt, 'number');
+});
+
+test('WeixinBridgeRuntime defers assistant reminders when WeChat delivery session expires', async () => {
+  const deferredRecords: Array<{ id: string; retryAfter?: number | null; errorCode?: number | null }> = [];
+  const deliveredRecords: Array<{ id: string; deliveredAt?: number | null }> = [];
+  const reminder = {
+    id: 'reminder-session-expired-1',
+    title: '给王总回电话',
+    content: '今天下午前给王总回电话',
+    scopeId: 'wxid_reminder_1',
+    attachments: [],
+  };
+  const runtime = makeRuntime({
+    assistantRecords: {
+      listDueReminders() {
+        return [reminder];
+      },
+      markReminderDelivered(id: string, payload: any) {
+        deliveredRecords.push({ id, deliveredAt: payload.deliveredAt });
+      },
+      markReminderDeliveryDeferred(id: string, payload: any) {
+        deferredRecords.push({ id, retryAfter: payload.retryAfter, errorCode: payload.errorCode });
+      },
+    },
+    sendText: async ({ content }) => ({
+      success: false,
+      deliveredCount: 0,
+      deliveredText: '',
+      failedIndex: 0,
+      failedText: content,
+      error: 'session paused for accountId=bot, 60 min remaining (errcode -14)',
+      errorCode: -14,
+    }),
+    coordinator: {
+      async reconcileActiveTurn() {
+        return null;
+      },
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  const before = Date.now();
+  await runtime.runAutomationSweep();
+  await runtime.waitForIdle();
+
+  assert.equal(deliveredRecords.length, 0);
+  assert.equal(deferredRecords.length, 1);
+  assert.equal(deferredRecords[0]?.id, 'reminder-session-expired-1');
+  assert.equal(deferredRecords[0]?.errorCode, -14);
+  assert.equal((deferredRecords[0]?.retryAfter ?? 0) >= before + 60_000, true);
+});
+
+test('WeixinBridgeRuntime marks assistant reminders delivered only after successful WeChat send', async () => {
+  const deferredRecords: Array<{ id: string }> = [];
+  const deliveredRecords: Array<{ id: string; deliveredAt?: number | null }> = [];
+  const sent: Array<{ externalScopeId: string; content: string }> = [];
+  const reminder = {
+    id: 'reminder-delivered-1',
+    title: '提交周报',
+    content: '把本周进展发给团队',
+    scopeId: 'wxid_reminder_2',
+    attachments: [],
+  };
+  const runtime = makeRuntime({
+    assistantRecords: {
+      listDueReminders() {
+        return [reminder];
+      },
+      markReminderDelivered(id: string, payload: any) {
+        deliveredRecords.push({ id, deliveredAt: payload.deliveredAt });
+      },
+      markReminderDeliveryDeferred(id: string) {
+        deferredRecords.push({ id });
+      },
+    },
+    sendText: async ({ externalScopeId, content }) => {
+      sent.push({ externalScopeId, content });
+    },
+    coordinator: {
+      async reconcileActiveTurn() {
+        return null;
+      },
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  await runtime.runAutomationSweep();
+  await runtime.waitForIdle();
+
+  assert.equal(deferredRecords.length, 0);
+  assert.equal(deliveredRecords.length, 1);
+  assert.equal(deliveredRecords[0]?.id, 'reminder-delivered-1');
+  assert.equal(typeof deliveredRecords[0]?.deliveredAt, 'number');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.externalScopeId, 'wxid_reminder_2');
+  assert.match(sent[0]?.content ?? '', /提交周报/);
 });
 
 test('WeixinBridgeRuntime prefers supervision-backed agent scheduling and does not double-dispatch the same mission', async () => {

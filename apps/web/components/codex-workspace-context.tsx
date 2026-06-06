@@ -21,6 +21,8 @@ const SIDEBAR_WIDTH_STORAGE_KEY = 'codexbridge-web-sidebar-width';
 const LAST_ACTIVE_THREAD_STORAGE_KEY = 'codexbridge-web-last-active-thread-id';
 const LAST_ACTIVE_CWD_STORAGE_KEY = 'codexbridge-web-last-active-cwd';
 const LAST_ACTIVE_PERMISSIONS_MODE_STORAGE_KEY = 'codexbridge-web-last-active-permissions-mode';
+const LAST_ACTIVE_MODEL_STORAGE_KEY = 'codexbridge-web-last-active-model';
+const LAST_ACTIVE_REASONING_EFFORT_STORAGE_KEY = 'codexbridge-web-last-active-reasoning-effort';
 export const PENDING_CREATED_THREAD_STORAGE_KEY = 'codexbridge-web-pending-created-thread';
 const DEFAULT_SIDEBAR_WIDTH = 284;
 const MIN_SIDEBAR_WIDTH = 224;
@@ -36,7 +38,9 @@ type ThreadListResponse = {
 type DraftThreadState = {
   cwd: string | null;
   id: string;
+  model: string | null;
   permissionsMode: PermissionsMode;
+  reasoningEffort: string | null;
   startedAt: number;
 };
 
@@ -46,7 +50,9 @@ type CodexWorkspaceContextValue = {
   createThread: (options?: {
     cwd?: string | null;
     initialSettings?: {
+      model?: string | null;
       permissionsMode?: PermissionsMode | null;
+      reasoningEffort?: string | null;
     };
   }) => Promise<{
     cwd: string | null;
@@ -57,13 +63,21 @@ type CodexWorkspaceContextValue = {
   isMobileViewport: boolean;
   preferredLaunchPermissionsMode: PermissionsMode;
   preferredLaunchCwd: string | null;
+  preferredLaunchModel: string | null;
+  preferredLaunchReasoningEffort: string | null;
   refreshThreads: () => Promise<void>;
+  setPreferredLaunchModelSettings: (settings: {
+    model?: string | null;
+    reasoningEffort?: string | null;
+  }) => void;
   setPreferredLaunchPermissionsMode: (mode: PermissionsMode) => void;
   setThreads: Dispatch<SetStateAction<WebCodexThreadSummary[]>>;
   sidebarOpen: boolean;
   sidebarWidth: number;
   startDraftThread: (options?: {
     cwd?: string | null;
+    model?: string | null;
+    reasoningEffort?: string | null;
   }) => DraftThreadState;
   threads: WebCodexThreadSummary[];
   toggleSidebar: () => void;
@@ -133,6 +147,8 @@ export function CodexWorkspaceProvider({
   const [lastActiveThreadId, setLastActiveThreadId] = useState<string | null>(null);
   const [lastActiveCwd, setLastActiveCwd] = useState<string | null>(null);
   const [preferredLaunchPermissionsMode, setPreferredLaunchPermissionsModeState] = useState<PermissionsMode>('default-permissions');
+  const [preferredLaunchModel, setPreferredLaunchModelState] = useState<string | null>(null);
+  const [preferredLaunchReasoningEffort, setPreferredLaunchReasoningEffortState] = useState<string | null>(null);
   const [draftThread, setDraftThread] = useState<DraftThreadState | null>(null);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
 
@@ -167,6 +183,18 @@ export function CodexWorkspaceProvider({
       || savedPermissionsMode === 'custom'
     ) {
       setPreferredLaunchPermissionsModeState(savedPermissionsMode);
+    }
+
+    const savedModel = window.localStorage.getItem(LAST_ACTIVE_MODEL_STORAGE_KEY);
+    if (typeof savedModel === 'string') {
+      const normalizedModel = savedModel.trim();
+      setPreferredLaunchModelState(normalizedModel || null);
+    }
+
+    const savedReasoningEffort = window.localStorage.getItem(LAST_ACTIVE_REASONING_EFFORT_STORAGE_KEY);
+    if (typeof savedReasoningEffort === 'string') {
+      const normalizedEffort = savedReasoningEffort.trim();
+      setPreferredLaunchReasoningEffortState(normalizedEffort || null);
     }
 
     const media = window.matchMedia('(max-width: 960px)');
@@ -277,10 +305,18 @@ export function CodexWorkspaceProvider({
 
   const startDraftThread = useCallback((options?: {
     cwd?: string | null;
+    model?: string | null;
     permissionsMode?: PermissionsMode | null;
+    reasoningEffort?: string | null;
   }) => {
     const nextCwd = options?.cwd?.trim() || preferredLaunchCwd || null;
+    const nextModel = typeof options?.model === 'string'
+      ? (options.model.trim() || null)
+      : preferredLaunchModel;
     const nextPermissionsMode = options?.permissionsMode ?? preferredLaunchPermissionsMode;
+    const nextReasoningEffort = typeof options?.reasoningEffort === 'string'
+      ? (options.reasoningEffort.trim() || null)
+      : preferredLaunchReasoningEffort;
     if (nextCwd) {
       setLastActiveCwd(nextCwd);
       window.localStorage.setItem(LAST_ACTIVE_CWD_STORAGE_KEY, nextCwd);
@@ -288,12 +324,19 @@ export function CodexWorkspaceProvider({
     const draft = {
       cwd: nextCwd,
       id: createDraftThreadId(),
+      model: nextModel,
       permissionsMode: nextPermissionsMode,
+      reasoningEffort: nextReasoningEffort,
       startedAt: Date.now(),
     } satisfies DraftThreadState;
     setDraftThread(draft);
     return draft;
-  }, [preferredLaunchCwd, preferredLaunchPermissionsMode]);
+  }, [
+    preferredLaunchCwd,
+    preferredLaunchModel,
+    preferredLaunchPermissionsMode,
+    preferredLaunchReasoningEffort,
+  ]);
 
   const clearDraftThread = useCallback(() => {
     setDraftThread(null);
@@ -305,19 +348,58 @@ export function CodexWorkspaceProvider({
     setDraftThread((current) => current ? { ...current, permissionsMode: mode } : current);
   }, []);
 
+  const setPreferredLaunchModelSettings = useCallback((settings: {
+    model?: string | null;
+    reasoningEffort?: string | null;
+  }) => {
+    if (Object.prototype.hasOwnProperty.call(settings, 'model')) {
+      const nextModel = typeof settings.model === 'string' ? (settings.model.trim() || null) : null;
+      setPreferredLaunchModelState(nextModel);
+      if (nextModel) {
+        window.localStorage.setItem(LAST_ACTIVE_MODEL_STORAGE_KEY, nextModel);
+      } else {
+        window.localStorage.removeItem(LAST_ACTIVE_MODEL_STORAGE_KEY);
+      }
+      setDraftThread((current) => current ? { ...current, model: nextModel } : current);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(settings, 'reasoningEffort')) {
+      const nextReasoningEffort = typeof settings.reasoningEffort === 'string'
+        ? (settings.reasoningEffort.trim() || null)
+        : null;
+      setPreferredLaunchReasoningEffortState(nextReasoningEffort);
+      if (nextReasoningEffort) {
+        window.localStorage.setItem(LAST_ACTIVE_REASONING_EFFORT_STORAGE_KEY, nextReasoningEffort);
+      } else {
+        window.localStorage.removeItem(LAST_ACTIVE_REASONING_EFFORT_STORAGE_KEY);
+      }
+      setDraftThread((current) => current ? { ...current, reasoningEffort: nextReasoningEffort } : current);
+    }
+  }, []);
+
   const createThread = useCallback(async (options?: {
     cwd?: string | null;
     initialSettings?: {
+      model?: string | null;
       permissionsMode?: PermissionsMode | null;
+      reasoningEffort?: string | null;
     };
   }) => {
     const cwd = options?.cwd?.trim() || preferredLaunchCwd || '';
+    const model = typeof options?.initialSettings?.model === 'string'
+      ? options.initialSettings.model.trim()
+      : '';
+    const reasoningEffort = typeof options?.initialSettings?.reasoningEffort === 'string'
+      ? options.initialSettings.reasoningEffort.trim()
+      : '';
     const response = await fetch('/api/codex-folders/new', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         cwd,
+        model: model || null,
         permissionsMode: options?.initialSettings?.permissionsMode ?? null,
+        reasoningEffort: reasoningEffort || null,
       }),
     });
     const payload = await response.json().catch(() => null) as {
@@ -388,7 +470,10 @@ export function CodexWorkspaceProvider({
     isMobileViewport,
     preferredLaunchPermissionsMode,
     preferredLaunchCwd,
+    preferredLaunchModel,
+    preferredLaunchReasoningEffort,
     refreshThreads,
+    setPreferredLaunchModelSettings,
     setPreferredLaunchPermissionsMode,
     setThreads,
     sidebarOpen,
@@ -405,7 +490,10 @@ export function CodexWorkspaceProvider({
     isMobileViewport,
     preferredLaunchPermissionsMode,
     preferredLaunchCwd,
+    preferredLaunchModel,
+    preferredLaunchReasoningEffort,
     refreshThreads,
+    setPreferredLaunchModelSettings,
     setPreferredLaunchPermissionsMode,
     sidebarOpen,
     sidebarWidth,

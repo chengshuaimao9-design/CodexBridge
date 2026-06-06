@@ -89,6 +89,22 @@ function formatModelPillLabel(
   return `${modelLabel} · ${effortLabel}`;
 }
 
+function formatLaunchModelPillLabel(
+  modelOptions: ThreadModelOptions | null,
+  settings: {
+    model: string | null;
+    reasoningEffort: string | null;
+  },
+) {
+  const modelLabel = modelOptions?.effectiveModelLabel
+    ?? settings.model
+    ?? '默认模型';
+  const effortLabel = modelOptions?.effectiveReasoningEffort
+    ?? settings.reasoningEffort
+    ?? '默认';
+  return `${modelLabel} · ${effortLabel}`;
+}
+
 function createLocalMessageId(prefix: 'local-user' | 'local-assistant') {
   const uuid = globalThis.crypto?.randomUUID?.();
   if (uuid) {
@@ -226,9 +242,12 @@ export function CodexSessionsEmptyState() {
     createThread,
     draftThread,
     isMobileViewport,
+    preferredLaunchModel,
     preferredLaunchPermissionsMode,
     preferredLaunchCwd,
+    preferredLaunchReasoningEffort,
     sidebarOpen,
+    setPreferredLaunchModelSettings,
     setPreferredLaunchPermissionsMode,
     threads,
     toggleSidebar,
@@ -238,11 +257,22 @@ export function CodexSessionsEmptyState() {
   const [launching, setLaunching] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
   const [permissionsMenuOpen, setPermissionsMenuOpen] = useState(false);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [launchModelOptions, setLaunchModelOptions] = useState<ThreadModelOptions | null>(null);
+  const [loadingLaunchModelOptions, setLoadingLaunchModelOptions] = useState(false);
+  const [updatingLaunchModelSettings, setUpdatingLaunchModelSettings] = useState(false);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const permissionsMenuRef = useRef<HTMLDivElement | null>(null);
+  const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const isComposing = launching || composerFocused || composerText.trim().length > 0;
   const launchCwd = draftThread?.cwd ?? preferredLaunchCwd;
+  const launchModel = draftThread?.model ?? preferredLaunchModel;
   const launchPermissionsMode = draftThread?.permissionsMode ?? preferredLaunchPermissionsMode;
+  const launchReasoningEffort = draftThread?.reasoningEffort ?? preferredLaunchReasoningEffort;
+  const launchModelPillLabel = formatLaunchModelPillLabel(launchModelOptions, {
+    model: launchModel,
+    reasoningEffort: launchReasoningEffort,
+  });
 
   useLayoutEffect(() => {
     const input = composerInputRef.current;
@@ -265,13 +295,92 @@ export function CodexSessionsEmptyState() {
       ) {
         setPermissionsMenuOpen(false);
       }
+      if (
+        modelMenuRef.current
+        && event.target instanceof Node
+        && !modelMenuRef.current.contains(event.target)
+      ) {
+        setModelMenuOpen(false);
+      }
     }
-    if (!permissionsMenuOpen) {
+    if (!permissionsMenuOpen && !modelMenuOpen) {
       return;
     }
     window.addEventListener('mousedown', handlePointer);
     return () => window.removeEventListener('mousedown', handlePointer);
-  }, [permissionsMenuOpen]);
+  }, [modelMenuOpen, permissionsMenuOpen]);
+
+  async function loadLaunchModelOptions(nextSettings?: {
+    model?: string | null;
+    reasoningEffort?: string | null;
+  }) {
+    if (loadingLaunchModelOptions && !nextSettings) {
+      return;
+    }
+    setLoadingLaunchModelOptions(true);
+    try {
+      const searchParams = new URLSearchParams();
+      const nextModel = typeof nextSettings?.model === 'string' ? nextSettings.model : launchModel;
+      const nextEffort = typeof nextSettings?.reasoningEffort === 'string'
+        ? nextSettings.reasoningEffort
+        : launchReasoningEffort;
+      if (nextModel) {
+        searchParams.set('model', nextModel);
+      }
+      if (nextEffort) {
+        searchParams.set('reasoningEffort', nextEffort);
+      }
+      const query = searchParams.toString();
+      const response = await fetch(`/api/codex-launch/model-options${query ? `?${query}` : ''}`, {
+        cache: 'no-store',
+      });
+      const payload = await response.json().catch(() => null) as (ThreadModelOptions & { error?: string }) | null;
+      if (!response.ok || payload?.error) {
+        throw new Error((payload?.error && String(payload.error).trim()) || '模型列表加载失败');
+      }
+      setLaunchModelOptions(payload);
+    } catch (error) {
+      setLaunchError(error instanceof Error ? error.message : '模型列表加载失败');
+    } finally {
+      setLoadingLaunchModelOptions(false);
+    }
+  }
+
+  async function applyLaunchModelUpdate(nextSettings: {
+    model?: string | null;
+    reasoningEffort?: string | null;
+  }) {
+    setUpdatingLaunchModelSettings(true);
+    setLaunchError(null);
+    try {
+      const normalizedSettings = { ...nextSettings };
+      if (
+        Object.prototype.hasOwnProperty.call(nextSettings, 'model')
+        && !Object.prototype.hasOwnProperty.call(nextSettings, 'reasoningEffort')
+      ) {
+        const nextModel = typeof nextSettings.model === 'string' ? nextSettings.model.trim() : '';
+        const nextModelOption = nextModel
+          ? launchModelOptions?.availableModels.find((option) => option.model === nextModel || option.id === nextModel) ?? null
+          : null;
+        const currentEffort = launchReasoningEffort?.trim() || '';
+        if (
+          currentEffort
+          && nextModelOption
+          && !nextModelOption.supportedReasoningEfforts.some((effort) => effort === currentEffort)
+        ) {
+          normalizedSettings.reasoningEffort = null;
+        }
+      }
+
+      setPreferredLaunchModelSettings(normalizedSettings);
+      await loadLaunchModelOptions(normalizedSettings);
+      setModelMenuOpen(false);
+    } catch (error) {
+      setLaunchError(error instanceof Error ? error.message : '模型设置更新失败');
+    } finally {
+      setUpdatingLaunchModelSettings(false);
+    }
+  }
 
   async function handleStartConversation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -290,7 +399,9 @@ export function CodexSessionsEmptyState() {
       const result = await createThread({
         cwd: launchCwd,
         initialSettings: {
+          model: launchModel,
           permissionsMode: launchPermissionsMode,
+          reasoningEffort: launchReasoningEffort,
         },
       });
       if (!result.threadId) {
@@ -369,6 +480,110 @@ export function CodexSessionsEmptyState() {
             </div>
           ) : null}
         </div>
+        <div className="workspace-composer-mode" ref={modelMenuRef}>
+          <button
+            aria-expanded={modelMenuOpen}
+            aria-label="切换模型"
+            className="workspace-composer-mode-trigger"
+            disabled={loadingLaunchModelOptions || updatingLaunchModelSettings || launching}
+            onClick={() => {
+              setModelMenuOpen((current) => {
+                const next = !current;
+                if (next) {
+                  void loadLaunchModelOptions();
+                }
+                return next;
+              });
+            }}
+            type="button"
+          >
+            <span>{launchModelPillLabel}</span>
+            <span className="workspace-composer-mode-caret">⌄</span>
+          </button>
+          {modelMenuOpen ? (
+            <div className="workspace-composer-mode-menu">
+              <button
+                className="workspace-composer-mode-item"
+                disabled={updatingLaunchModelSettings}
+                onClick={() => void applyLaunchModelUpdate({ model: null, reasoningEffort: null })}
+                type="button"
+              >
+                <span className="workspace-composer-mode-item-label">使用默认模型</span>
+                <span className="workspace-composer-mode-item-description">清除新会话的模型与思考深度覆盖</span>
+              </button>
+              {loadingLaunchModelOptions && !launchModelOptions ? (
+                <div className="workspace-composer-mode-item workspace-composer-mode-item-static">
+                  <span className="workspace-composer-mode-item-label">正在加载模型…</span>
+                </div>
+              ) : null}
+              {!loadingLaunchModelOptions && launchModelOptions && launchModelOptions.availableModels.length === 0 ? (
+                <div className="workspace-composer-mode-item workspace-composer-mode-item-static">
+                  <span className="workspace-composer-mode-item-label">当前 provider 没有返回可用模型</span>
+                </div>
+              ) : null}
+              {launchModelOptions?.availableModels.map((option) => (
+                <button
+                  className="workspace-composer-mode-item"
+                  disabled={updatingLaunchModelSettings}
+                  key={option.id || option.model}
+                  onClick={() => void applyLaunchModelUpdate({ model: option.model })}
+                  type="button"
+                >
+                  <span className="workspace-composer-mode-item-label">
+                    {option.model}
+                    {launchModelOptions.effectiveModelId === option.model || launchModelOptions.effectiveModelId === option.id ? ' · 当前' : ''}
+                    {option.isDefault ? ' · 默认' : ''}
+                  </span>
+                  <span className="workspace-composer-mode-item-description">
+                    {option.displayName && option.displayName !== option.model
+                      ? `${option.displayName}${option.description ? ` · ${option.description}` : ''}`
+                      : (option.description || '选择这个模型用于新会话')}
+                  </span>
+                </button>
+              ))}
+              {(launchModelOptions?.availableModels.find((entry) => (
+                entry.model === launchModelOptions.effectiveModelId || entry.id === launchModelOptions.effectiveModelId
+              ))?.supportedReasoningEfforts ?? []).length > 0 ? (
+                <>
+                  <div className="workspace-composer-mode-divider" />
+                  <button
+                    className="workspace-composer-mode-item"
+                    disabled={updatingLaunchModelSettings}
+                    onClick={() => void applyLaunchModelUpdate({ reasoningEffort: null })}
+                    type="button"
+                  >
+                    <span className="workspace-composer-mode-item-label">
+                      默认思考深度
+                      {launchModelOptions?.effectiveReasoningEffortSource === 'model_default' ? ' · 当前' : ''}
+                    </span>
+                    <span className="workspace-composer-mode-item-description">
+                      {launchModelOptions?.defaultReasoningEffort
+                        ? `使用模型默认值：${launchModelOptions.defaultReasoningEffort}`
+                        : '清除新会话的思考深度覆盖'}
+                    </span>
+                  </button>
+                  {(launchModelOptions?.availableModels.find((entry) => (
+                    entry.model === launchModelOptions.effectiveModelId || entry.id === launchModelOptions.effectiveModelId
+                  ))?.supportedReasoningEfforts ?? []).map((effort) => (
+                    <button
+                      className="workspace-composer-mode-item"
+                      disabled={updatingLaunchModelSettings}
+                      key={effort}
+                      onClick={() => void applyLaunchModelUpdate({ reasoningEffort: effort })}
+                      type="button"
+                    >
+                      <span className="workspace-composer-mode-item-label">
+                        {effort}
+                        {launchModelOptions?.effectiveReasoningEffort === effort ? ' · 当前' : ''}
+                      </span>
+                      <span className="workspace-composer-mode-item-description">更新新会话的思考深度</span>
+                    </button>
+                  ))}
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </div>
       <button
         aria-label="发送"
@@ -404,7 +619,7 @@ export function CodexSessionsEmptyState() {
         {isComposing ? (
           <div className="workspace-empty-state-compose">
             <div className="workspace-empty-state-compose-copy">
-              <p className="workspace-subtle">将在 {getCwdDisplayName(launchCwd)} 中创建新聊天 · {formatPermissionsModeLabel(launchPermissionsMode)}</p>
+              <p className="workspace-subtle">将在 {getCwdDisplayName(launchCwd)} 中创建新聊天 · {formatPermissionsModeLabel(launchPermissionsMode)} · {launchModelPillLabel}</p>
             </div>
             {composer}
             {launchError ? <p className="workspace-form-error">{launchError}</p> : null}
@@ -414,7 +629,7 @@ export function CodexSessionsEmptyState() {
             <h2>我们先从哪里开始呢？</h2>
             {composer}
             <p className="workspace-subtle">
-              左侧已准备好 {threads.length} 条会话，新的对话将默认创建在 {getCwdDisplayName(launchCwd)} 中 · {formatPermissionsModeLabel(launchPermissionsMode)}
+              左侧已准备好 {threads.length} 条会话，新的对话将默认创建在 {getCwdDisplayName(launchCwd)} 中 · {formatPermissionsModeLabel(launchPermissionsMode)} · {launchModelPillLabel}
             </p>
             {launchError ? <p className="workspace-form-error">{launchError}</p> : null}
           </div>
@@ -435,6 +650,7 @@ export function CodexThreadPane({
   const {
     isMobileViewport,
     refreshThreads,
+    setPreferredLaunchModelSettings,
     setPreferredLaunchPermissionsMode,
     sidebarOpen,
     threads,
@@ -638,6 +854,19 @@ export function CodexThreadPane({
   useEffect(() => {
     setPreferredLaunchPermissionsMode(permissionsMode);
   }, [permissionsMode, setPreferredLaunchPermissionsMode]);
+
+  useEffect(() => {
+    setPreferredLaunchModelSettings({
+      model: modelOptions?.model ?? initialThreadSettings?.model ?? null,
+      reasoningEffort: modelOptions?.reasoningEffort ?? initialThreadSettings?.reasoningEffort ?? null,
+    });
+  }, [
+    initialThreadSettings?.model,
+    initialThreadSettings?.reasoningEffort,
+    modelOptions?.model,
+    modelOptions?.reasoningEffort,
+    setPreferredLaunchModelSettings,
+  ]);
 
   useEffect(() => {
     if (!threads.some((entry) => entry.threadId === threadId)) {

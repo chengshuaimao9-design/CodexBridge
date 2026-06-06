@@ -6,9 +6,16 @@ import { clearWebQueryCaches } from '@/lib/server/queries';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
-  const payload = await request.json().catch(() => null) as { cwd?: unknown; permissionsMode?: unknown } | null;
+  const payload = await request.json().catch(() => null) as {
+    cwd?: unknown;
+    model?: unknown;
+    permissionsMode?: unknown;
+    reasoningEffort?: unknown;
+  } | null;
   const cwd = typeof payload?.cwd === 'string' ? payload.cwd.trim() : '';
+  const model = typeof payload?.model === 'string' ? payload.model.trim() : '';
   const permissionsMode = typeof payload?.permissionsMode === 'string' ? payload.permissionsMode.trim() : '';
+  const reasoningEffort = typeof payload?.reasoningEffort === 'string' ? payload.reasoningEffort.trim() : '';
 
   const scriptPath = path.join(process.cwd(), 'server', 'create-codex-thread.ts');
   const repoRoot = path.resolve(process.cwd(), '..', '..');
@@ -42,7 +49,9 @@ export async function POST(request: NextRequest) {
 
     child.stdin.end(JSON.stringify({
       cwd: cwd || null,
+      model: model || null,
       permissionsMode: permissionsMode || null,
+      reasoningEffort: reasoningEffort || null,
       stateDir,
       repoRoot,
     }));

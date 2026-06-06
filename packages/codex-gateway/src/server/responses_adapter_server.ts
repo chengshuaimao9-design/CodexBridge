@@ -814,13 +814,35 @@ function findSseFrameBoundary(buffer: string): number {
 
 function extractSseData(frame: string): string | null {
   const lines = frame.split(/\r?\n/u);
+  const eventName = lines
+    .find((line) => line.startsWith('event:'))
+    ?.slice(6)
+    .trim();
   const dataLines = lines
     .filter((line) => line.startsWith('data:'))
     .map((line) => line.slice(5).trimStart());
   if (dataLines.length === 0) {
     return null;
   }
-  return dataLines.join('\n');
+  const data = dataLines.join('\n');
+  if (eventName === 'error' && data.trim() !== '[DONE]') {
+    try {
+      const parsed = JSON.parse(data);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return JSON.stringify({
+          type: 'error',
+          ...parsed,
+        });
+      }
+    } catch {
+      // Fall through to a normalized top-level error payload below.
+    }
+    return JSON.stringify({
+      type: 'error',
+      message: data,
+    });
+  }
+  return data;
 }
 
 function writeJson(response: ServerResponse, status: number, body: unknown) {

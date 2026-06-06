@@ -38,6 +38,12 @@ Provider-native tools and relay-emulated tools are explicit opt-ins:
 
 ## First Stable Surface
 
-This package currently defines the fixed target, tool strategy types, and Codex provider config builders. The next implementation phase will move the existing OpenAI-compatible app-server launch path from CodexBridge into this package and reuse `packages/codex-gateway` for protocol conversion.
+This package currently defines the fixed target, tool strategy types, protocol-aware Codex provider config builders, and Codex++-style local proxy URL helpers.
+
+For `responses` upstreams, Codex provider `base_url` points at the upstream Responses endpoint. For `chat-completions` upstreams, Codex provider `base_url` points at the local Responses proxy, while the third-party Chat Completions endpoint remains relay-owned configuration. This is required so the Codex native tool-call loop passes through `packages/codex-gateway` instead of bypassing conversion.
+
+The existing OpenAI-compatible Codex launch args now reuse this package. The next implementation phase will move the adapter server lifecycle wrapper from CodexBridge into this package and continue reusing `packages/codex-gateway` for protocol conversion.
 
 See [docs/TARGET.md](docs/TARGET.md) for the locked target and phased migration plan.
+
+See [docs/CODEX_PLUS_PLUS_CONVERSION_PORTING.md](docs/CODEX_PLUS_PLUS_CONVERSION_PORTING.md) for the detailed Codex++ protocol conversion porting checklist.

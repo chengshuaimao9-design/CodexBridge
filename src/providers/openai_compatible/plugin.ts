@@ -15,6 +15,7 @@ import type {
   ProviderUsageReport,
 } from '../../types/provider.js';
 import type { BridgeSession, SessionSettings } from '../../types/core.js';
+import { buildCodexProviderRelayCliArgs } from '../../../packages/codex-provider-relay/src/index.js';
 
 interface OpenAICompatibleProviderProfileConfig extends Record<string, unknown> {
   cliBin?: string | null;
@@ -388,16 +389,15 @@ export function buildOpenAICompatibleCodexCliArgs({
   defaultModel: string;
 }): string[] {
   const label = normalizeProviderLabel(providerLabel) || DEFAULT_PROVIDER_DEFAULTS.providerLabel;
-  return [
-    '-c', `model=${tomlString(normalizeString(defaultModel) || DEFAULT_PROVIDER_DEFAULTS.defaultModel)}`,
-    '-c', `model_provider=${tomlString(label)}`,
-    '-c', `model_providers.${label}.name=${tomlString(normalizeString(providerName) || DEFAULT_PROVIDER_DEFAULTS.displayName)}`,
-    '-c', `model_providers.${label}.base_url=${tomlString(adapterBaseUrl)}`,
-    '-c', `model_providers.${label}.env_key=${tomlString(normalizeString(apiKeyEnv) || DEFAULT_PROVIDER_DEFAULTS.apiKeyEnv)}`,
-    '-c', `model_providers.${label}.wire_api="responses"`,
-    '-c', `model_providers.${label}.requires_openai_auth=false`,
-    '-c', `model_providers.${label}.supports_websockets=false`,
-  ];
+  return buildCodexProviderRelayCliArgs({
+    providerLabel: label,
+    providerName: normalizeString(providerName) || DEFAULT_PROVIDER_DEFAULTS.displayName,
+    relayBaseUrl: adapterBaseUrl,
+    defaultModel: normalizeString(defaultModel) || DEFAULT_PROVIDER_DEFAULTS.defaultModel,
+    authMode: 'api-key-compatible',
+    apiKeyEnv: normalizeString(apiKeyEnv) || DEFAULT_PROVIDER_DEFAULTS.apiKeyEnv,
+    supportsWebsockets: false,
+  });
 }
 
 function resolveApiKey(
@@ -588,10 +588,6 @@ function normalizeStringList(value: unknown): string[] {
 function normalizeProviderLabel(value: unknown): string {
   const normalized = normalizeString(value);
   return /^[A-Za-z0-9_]+$/u.test(normalized) ? normalized : '';
-}
-
-function tomlString(value: unknown): string {
-  return JSON.stringify(String(value ?? ''));
 }
 
 function normalizeString(value: unknown): string {

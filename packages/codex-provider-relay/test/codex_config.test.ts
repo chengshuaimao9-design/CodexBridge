@@ -4,6 +4,8 @@ import {
   buildCodexProviderRelayCliArgs,
   buildCodexProviderRelayConfig,
   buildCodexProviderRelayTomlFragment,
+  codexBaseUrlForRelayProtocol,
+  localResponsesProxyBaseUrl,
   normalizeProviderLabel,
 } from '../src/index.js';
 
@@ -55,6 +57,35 @@ test('builds api-key compatible fallback config', () => {
   ].join('\n'));
 });
 
+test('builds Codex++ style config for Chat Completions upstreams through the local Responses proxy', () => {
+  const config = buildCodexProviderRelayConfig({
+    providerLabel: 'deepseek',
+    providerName: 'DeepSeek via Relay',
+    relayBaseUrl: 'https://api.deepseek.com/v1/',
+    relayProtocol: 'chat-completions',
+    protocolProxyPort: 57322,
+    defaultModel: 'deepseek-coder',
+    experimentalBearerToken: 'sk-chat',
+  });
+
+  assert.equal(config.relayProtocol, 'chat-completions');
+  assert.equal(config.upstreamBaseUrl, 'https://api.deepseek.com/v1');
+  assert.equal(config.codexBaseUrl, 'http://127.0.0.1:57322/v1');
+  assert.equal(config.protocolProxyPort, 57322);
+  assert.ok(config.entries.some((entry) =>
+    entry.key === 'model_providers.deepseek.base_url'
+      && entry.value === 'http://127.0.0.1:57322/v1',
+  ));
+  assert.ok(config.entries.some((entry) =>
+    entry.key === 'model_providers.deepseek.requires_openai_auth'
+      && entry.value === true,
+  ));
+  assert.ok(config.entries.some((entry) =>
+    entry.key === 'model_providers.deepseek.experimental_bearer_token'
+      && entry.value === 'sk-chat',
+  ));
+});
+
 test('builds CLI -c args from config entries', () => {
   const args = buildCodexProviderRelayCliArgs({
     providerLabel: 'relay',
@@ -82,4 +113,24 @@ test('builds CLI -c args from config entries', () => {
 test('normalizes provider labels for TOML path usage', () => {
   assert.equal(normalizeProviderLabel('123 deep seek'), 'provider_123_deep_seek');
   assert.equal(normalizeProviderLabel('deep-seek_v3'), 'deep-seek_v3');
+});
+
+test('resolves Codex provider base URLs from upstream relay protocol', () => {
+  assert.equal(
+    codexBaseUrlForRelayProtocol({
+      relayBaseUrl: 'https://api.example.com/v1/',
+      relayProtocol: 'responses',
+    }),
+    'https://api.example.com/v1',
+  );
+  assert.equal(
+    codexBaseUrlForRelayProtocol({
+      relayBaseUrl: 'https://api.example.com/v1',
+      relayProtocol: 'chat-completions',
+      protocolProxyPort: 58001,
+    }),
+    'http://127.0.0.1:58001/v1',
+  );
+  assert.equal(localResponsesProxyBaseUrl(), 'http://127.0.0.1:57321/v1');
+  assert.throws(() => localResponsesProxyBaseUrl(0), /proxy port/u);
 });

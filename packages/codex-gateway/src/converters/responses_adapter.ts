@@ -5,9 +5,29 @@ import {
   type OpenAICompatibleProviderCapabilities,
   type OpenAICompatiblePayloadRule,
 } from '../capabilities/thinking_policy.js';
+import {
+  type CodexToolContext,
+  buildCodexToolContext,
+  customToolSpec,
+  flattenNamespaceToolName,
+  isCustomToolProxy,
+  openaiNameForFunctionTool,
+  originalCustomToolName,
+  responsesToolsToChatTools,
+} from './codex_tool_context.js';
+import {
+  APPLY_PATCH_TOOL_NAME,
+  applyPatchProxyToolName,
+  buildCustomToolCallHistory,
+  reconstructApplyPatchInput,
+  reconstructCustomToolCallInput,
+} from './apply_patch_proxy.js';
 
 type JsonRecord = Record<string, any>;
 type ToolNameMap = Map<string, string>;
+
+const THINK_OPEN_TAG = '<think>';
+const THINK_CLOSE_TAG = '</think>';
 
 export interface ResponsesToChatOptions {
   model?: string | null;
@@ -40,6 +60,13 @@ interface StreamToolCallState {
   done: boolean;
 }
 
+type InlineThinkMode = 'detecting' | 'reasoning' | 'text';
+
+interface InlineThinkState {
+  mode: InlineThinkMode;
+  buffer: string;
+}
+
 interface StreamState {
   responseId: string;
   createdAt: number;
@@ -56,6 +83,7 @@ interface StreamState {
     contentAdded: boolean;
     done: boolean;
   }>;
+  inlineThinkStates: Map<number, InlineThinkState>;
   reasoningStates: Map<number, {
     id: string;
     outputIndex: number;
@@ -71,12 +99,14 @@ interface StreamState {
   usage: JsonRecord | null;
   providerCapabilities: OpenAICompatibleProviderCapabilities | null;
   reverseToolNameMap: ToolNameMap;
+  toolContext: CodexToolContext;
 }
 
 export function responsesRequestToChatCompletions(
   request: JsonRecord,
   options: ResponsesToChatOptions = {},
 ): JsonRecord {
+  const toolContext = buildCodexToolContext(request?.tools);
   const toolNameMap = buildToolNameMap(request);
   const model = normalizeString(options.model) || normalizeString(request?.model);
   const providerCapabilities = resolveOpenAICompatibleProviderCapabilitiesForModel(
@@ -97,6 +127,12 @@ export function responsesRequestToChatCompletions(
   copyIfPresent(request, chat, 'user');
   if (request?.max_output_tokens !== undefined) {
     chat.max_tokens = request.max_output_tokens;
+  }
+  if (chat.stream) {
+    chat.stream_options = {
+      ...(chat.stream_options && typeof chat.stream_options === 'object' ? chat.stream_options : {}),
+      include_usage: true,
+    };
   }
   if (
     builtinWebSearchTransport === 'chat_enable_search'
@@ -142,15 +178,15 @@ export function responsesRequestToChatCompletions(
   }
 
   const tools = toolsSupported
-    ? normalizeArray(request?.tools)
-      .map((tool) => convertResponsesToolToChatTool(
+    ? responsesToolsToChatTools(request?.tools, toolContext, {
+      shortenToolName: (name) => shortenToolName(name, toolNameMap),
+      builtinToolConverter: (tool) => convertResponsesBuiltinToolToChatTool(
         tool,
         options.providerKind,
         providerCapabilities,
-        toolNameMap,
         builtinWebSearchTransport,
-      ))
-      .filter(Boolean)
+      ),
+    })
     : [];
   if (tools.length > 0) {
     chat.tools = tools;
@@ -177,6 +213,7 @@ export function chatCompletionsResponseToResponses(
 ): JsonRecord {
   const request = options.request ?? {};
   const reverseToolNameMap = buildReverseToolNameMap(request);
+  const toolContext = buildCodexToolContext(request?.tools);
   const responseId = normalizeString(options.responseId)
     || normalizeString(chatResponse?.id)
     || `resp_${crypto.randomUUID()}`;
@@ -187,20 +224,14 @@ export function chatCompletionsResponseToResponses(
 
   for (const choice of normalizeArray(chatResponse?.choices)) {
     const message = choice?.message ?? {};
-    const text = normalizeString(message?.content);
-    const reasoningContent = normalizeString(message?.reasoning_content);
+    const rawText = typeof message?.content === 'string' ? message.content : normalizeString(message?.content);
+    const inlineThink = splitLeadingThinkBlock(rawText);
+    const text = inlineThink ? normalizeString(inlineThink.answer) : normalizeString(rawText);
+    const explicitReasoningContent = extractReasoningText(message);
+    const reasoningContent = explicitReasoningContent || inlineThink?.reasoning || '';
     const toolCalls = normalizeArray(message?.tool_calls);
     if (reasoningContent || request?.reasoning) {
-      output.push(omitUndefined({
-        id: `rs_${crypto.randomUUID()}`,
-        type: 'reasoning',
-        summary: reasoningContent
-          ? [{
-            type: 'summary_text',
-            text: reasoningContent,
-          }]
-          : [],
-      }));
+      output.push(buildCompletedReasoningOutputItem(reasoningContent));
     }
     if (text) {
       output.push({
@@ -218,15 +249,7 @@ export function chatCompletionsResponseToResponses(
       });
     }
     for (const toolCall of toolCalls) {
-      const callId = normalizeString(toolCall?.id) || `call_${crypto.randomUUID()}`;
-      output.push({
-        id: `fc_${crypto.randomUUID()}`,
-        type: 'function_call',
-        status: 'completed',
-        call_id: callId,
-        name: restoreToolName(normalizeString(toolCall?.function?.name) || 'tool', reverseToolNameMap),
-        arguments: normalizeString(toolCall?.function?.arguments) || '',
-      });
+      output.push(chatToolCallToResponseOutputItem(toolCall, reverseToolNameMap, toolContext));
     }
   }
 
@@ -364,6 +387,33 @@ function appendInputItem(
     }
     return;
   }
+  if (type === 'custom_tool_call') {
+    if (!supportsToolCalling(providerCapabilities)) {
+      messages.push({
+        role: 'assistant',
+        content: formatUnsupportedCustomToolCallAsText(item),
+      });
+      return;
+    }
+    const toolCall = customToolCallToChatToolCall(item, toolNameMap);
+    appendAssistantToolCall(messages, toolCall);
+    return;
+  }
+  if (type === 'custom_tool_call_output') {
+    if (!supportsToolCalling(providerCapabilities)) {
+      messages.push({
+        role: 'user',
+        content: formatUnsupportedToolOutputAsText(item),
+      });
+      return;
+    }
+    messages.push({
+      role: 'tool',
+      tool_call_id: normalizeString(item.call_id) || `call_${crypto.randomUUID()}`,
+      content: normalizeString(item.output) || '',
+    });
+    return;
+  }
   if (type === 'function_call') {
     if (!supportsToolCalling(providerCapabilities)) {
       messages.push({
@@ -372,28 +422,18 @@ function appendInputItem(
       });
       return;
     }
-    const previous = messages.at(-1);
     const toolCall = {
       id: normalizeString(item.call_id) || `call_${crypto.randomUUID()}`,
       type: 'function',
       function: {
-        name: shortenToolName(normalizeString(item.name) || 'tool', toolNameMap),
+        name: shortenToolName(
+          flattenNamespaceToolName(normalizeString(item.namespace), normalizeString(item.name) || 'tool'),
+          toolNameMap,
+        ),
         arguments: normalizeString(item.arguments) || '',
       },
     };
-    if (previous?.role === 'assistant') {
-      if (Array.isArray(previous.tool_calls)) {
-        previous.tool_calls.push(toolCall);
-      } else {
-        previous.tool_calls = [toolCall];
-      }
-    } else {
-      messages.push({
-        role: 'assistant',
-        content: null,
-        tool_calls: [toolCall],
-      });
-    }
+    appendAssistantToolCall(messages, toolCall);
     return;
   }
   if (type === 'function_call_output') {
@@ -422,10 +462,298 @@ function formatUnsupportedToolCallAsText(item: JsonRecord): string {
   return `[Tool call omitted because this model does not support tools: ${name} ${args}]`;
 }
 
+function formatUnsupportedCustomToolCallAsText(item: JsonRecord): string {
+  const name = normalizeString(item?.name) || 'custom_tool';
+  const input = normalizeString(item?.input) || '';
+  return `[Custom tool call omitted because this model does not support tools: ${name} ${input}]`;
+}
+
 function formatUnsupportedToolOutputAsText(item: JsonRecord): string {
   const callId = normalizeString(item?.call_id) || 'unknown';
   const output = normalizeString(item?.output) || '';
   return `[Tool output omitted because this model does not support tools: ${callId} ${output}]`;
+}
+
+function customToolCallToChatToolCall(item: JsonRecord, toolNameMap: ToolNameMap): JsonRecord {
+  const name = normalizeString(item.name) || 'custom_tool';
+  const history = buildCustomToolCallHistory(name, item.input ?? '');
+  return {
+    id: normalizeString(item.call_id) || `call_${crypto.randomUUID()}`,
+    type: 'function',
+    function: {
+      name: shortenToolName(history.name, toolNameMap),
+      arguments: history.arguments,
+    },
+  };
+}
+
+function appendAssistantToolCall(messages: JsonRecord[], toolCall: JsonRecord): void {
+  const previous = messages.at(-1);
+  if (previous?.role === 'assistant') {
+    if (Array.isArray(previous.tool_calls)) {
+      previous.tool_calls.push(toolCall);
+    } else {
+      previous.tool_calls = [toolCall];
+    }
+    if (previous.content === undefined) {
+      previous.content = null;
+    }
+    return;
+  }
+  messages.push({
+    role: 'assistant',
+    content: null,
+    tool_calls: [toolCall],
+  });
+}
+
+function chatToolCallToResponseOutputItem(
+  toolCall: JsonRecord,
+  reverseToolNameMap: ToolNameMap,
+  toolContext: CodexToolContext,
+): JsonRecord {
+  const callId = normalizeString(toolCall?.id) || `call_${crypto.randomUUID()}`;
+  const upstreamName = restoreToolName(normalizeString(toolCall?.function?.name) || 'tool', reverseToolNameMap);
+  const argumentsText = normalizeString(toolCall?.function?.arguments) || '';
+
+  if (isCustomToolProxy(toolContext, upstreamName)) {
+    const spec = customToolSpec(toolContext, upstreamName);
+    const input = spec?.kind === 'apply_patch'
+      ? reconstructApplyPatchInput(spec.proxyAction, argumentsText)
+      : reconstructCustomToolCallInput(argumentsText);
+    return {
+      id: `ctc_${callId}`,
+      type: 'custom_tool_call',
+      status: 'completed',
+      call_id: callId,
+      name: originalCustomToolName(toolContext, upstreamName),
+      input,
+    };
+  }
+
+  const restored = openaiNameForFunctionTool(toolContext, upstreamName);
+  return omitUndefined({
+    id: buildFunctionCallItemId(callId),
+    type: 'function_call',
+    status: 'completed',
+    call_id: callId,
+    name: restored.name,
+    namespace: restored.namespace || undefined,
+    arguments: argumentsText,
+  });
+}
+
+function buildCompletedReasoningOutputItem(text: string): JsonRecord {
+  return omitUndefined({
+    id: `rs_${crypto.randomUUID()}`,
+    type: 'reasoning',
+    reasoning_content: text || undefined,
+    summary: text
+      ? [{
+        type: 'summary_text',
+        text,
+      }]
+      : [],
+  });
+}
+
+function extractReasoningText(message: JsonRecord): string {
+  const direct = firstNonEmptyString([
+    message?.reasoning_content,
+    message?.reasoning,
+    message?.reasoning_text,
+    message?.thinking,
+    message?.thoughts,
+  ]);
+  if (direct) {
+    return direct;
+  }
+  return reasoningDetailsText(message?.reasoning_details);
+}
+
+function reasoningDetailsText(value: unknown): string {
+  const parts: string[] = [];
+  for (const detail of normalizeArray(value)) {
+    if (!detail || typeof detail !== 'object') {
+      continue;
+    }
+    const record = detail as JsonRecord;
+    const direct = firstNonEmptyString([record.summary, record.text, record.content]);
+    if (direct) {
+      parts.push(direct);
+    }
+    for (const part of normalizeArray(record.parts)) {
+      const text = firstNonEmptyString([part?.text, part?.summary, part?.content]);
+      if (text) {
+        parts.push(text);
+      }
+    }
+  }
+  return parts.join('\n\n');
+}
+
+function firstNonEmptyString(values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return '';
+}
+
+function splitLeadingThinkBlock(text: string): { reasoning: string; answer: string } | null {
+  const leadingWhitespaceLength = text.length - text.trimStart().length;
+  const afterWhitespace = text.slice(leadingWhitespaceLength);
+  if (!afterWhitespace.startsWith(THINK_OPEN_TAG)) {
+    return null;
+  }
+  const bodyStart = leadingWhitespaceLength + THINK_OPEN_TAG.length;
+  const closeRelative = text.slice(bodyStart).indexOf(THINK_CLOSE_TAG);
+  if (closeRelative < 0) {
+    return null;
+  }
+  const closeStart = bodyStart + closeRelative;
+  const answerStart = closeStart + THINK_CLOSE_TAG.length;
+  return {
+    reasoning: text.slice(bodyStart, closeStart).trim(),
+    answer: text.slice(answerStart).trimStart(),
+  };
+}
+
+function leadingThinkPrefixDecision(buffer: string): 'need_more' | 'reasoning' | 'text' {
+  const afterWhitespace = buffer.trimStart();
+  if (!afterWhitespace) {
+    return 'need_more';
+  }
+  if (afterWhitespace.startsWith(THINK_OPEN_TAG)) {
+    return 'reasoning';
+  }
+  if (THINK_OPEN_TAG.startsWith(afterWhitespace)) {
+    return 'need_more';
+  }
+  return 'text';
+}
+
+function drainCompleteInlineThink(
+  state: StreamState,
+  choiceIndex: number,
+  inlineState: InlineThinkState,
+): JsonRecord[] {
+  const split = splitLeadingThinkBlock(inlineState.buffer);
+  if (!split) {
+    return [];
+  }
+  inlineState.mode = 'text';
+  inlineState.buffer = '';
+  const events: JsonRecord[] = [];
+  if (split.reasoning) {
+    events.push(...appendReasoningDelta(state, choiceIndex, split.reasoning));
+    events.push(...finishReasoningState(state, choiceIndex));
+  }
+  if (split.answer) {
+    events.push(...appendOutputTextDelta(state, choiceIndex, split.answer));
+  }
+  return events;
+}
+
+function flushInlineThinkAtBoundary(state: StreamState, choiceIndex: number): JsonRecord[] {
+  const inlineState = state.inlineThinkStates.get(choiceIndex);
+  if (!inlineState || inlineState.mode === 'text') {
+    return [];
+  }
+  const events = drainCompleteInlineThink(state, choiceIndex, inlineState);
+  if (events.length > 0) {
+    return events;
+  }
+  const buffered = inlineState.buffer;
+  const previousMode = inlineState.mode;
+  inlineState.buffer = '';
+  inlineState.mode = 'text';
+  if (!buffered) {
+    return [];
+  }
+  if (previousMode === 'reasoning' || buffered.trimStart().startsWith(THINK_OPEN_TAG)) {
+    const reasoning = stripLeadingThinkOpenTag(buffered).trim();
+    return reasoning
+      ? [
+        ...appendReasoningDelta(state, choiceIndex, reasoning),
+        ...finishReasoningState(state, choiceIndex),
+      ]
+      : [];
+  }
+  return appendOutputTextDelta(state, choiceIndex, buffered);
+}
+
+function stripLeadingThinkOpenTag(text: string): string {
+  const leadingWhitespaceLength = text.length - text.trimStart().length;
+  const afterWhitespace = text.slice(leadingWhitespaceLength);
+  return afterWhitespace.startsWith(THINK_OPEN_TAG)
+    ? afterWhitespace.slice(THINK_OPEN_TAG.length)
+    : text;
+}
+
+function buildStreamToolCallItemId(
+  upstreamName: string,
+  callId: string,
+  toolContext: CodexToolContext,
+): string {
+  return isCustomToolProxy(toolContext, upstreamName)
+    ? `ctc_${callId}`
+    : buildFunctionCallItemId(callId);
+}
+
+function buildStreamToolCallOutputItem(
+  toolCall: StreamToolCallState,
+  toolContext: CodexToolContext,
+): JsonRecord {
+  if (isCustomToolProxy(toolContext, toolCall.name)) {
+    return {
+      id: toolCall.id,
+      type: 'custom_tool_call',
+      status: 'in_progress',
+      call_id: toolCall.callId,
+      name: originalCustomToolName(toolContext, toolCall.name),
+      input: '',
+    };
+  }
+  const restored = openaiNameForFunctionTool(toolContext, toolCall.name);
+  return omitUndefined({
+    id: toolCall.id,
+    type: 'function_call',
+    status: 'in_progress',
+    call_id: toolCall.callId,
+    name: restored.name || toolCall.name || 'tool',
+    namespace: restored.namespace || undefined,
+    arguments: toolCall.arguments || '',
+  });
+}
+
+function updateStreamToolCallOutputItem(
+  item: JsonRecord,
+  toolCall: StreamToolCallState,
+  toolContext: CodexToolContext,
+): void {
+  if (isCustomToolProxy(toolContext, toolCall.name)) {
+    item.name = originalCustomToolName(toolContext, toolCall.name);
+    return;
+  }
+  const restored = openaiNameForFunctionTool(toolContext, toolCall.name);
+  item.name = restored.name || toolCall.name || 'tool';
+  if (restored.namespace) {
+    item.namespace = restored.namespace;
+  } else {
+    delete item.namespace;
+  }
+}
+
+function reconstructStreamCustomToolCallInput(
+  toolCall: StreamToolCallState,
+  toolContext: CodexToolContext,
+): string {
+  const spec = customToolSpec(toolContext, toolCall.name);
+  return spec?.kind === 'apply_patch'
+    ? reconstructApplyPatchInput(spec.proxyAction, toolCall.arguments)
+    : reconstructCustomToolCallInput(toolCall.arguments);
 }
 
 function convertResponsesContentToChatContent(
@@ -592,7 +920,29 @@ function convertResponsesToolChoiceToChatToolChoice(
   }
   if (rawType === 'function') {
     const functionName = shortenToolName(
-      normalizeString(record.name) || normalizeString(record.function?.name),
+      flattenNamespaceToolName(
+        normalizeString(record.namespace) || normalizeString(record.function?.namespace),
+        normalizeString(record.name) || normalizeString(record.function?.name),
+      ),
+      toolNameMap,
+    );
+    if (!functionName) {
+      return undefined;
+    }
+    return {
+      type: 'function',
+      function: {
+        name: functionName,
+      },
+    };
+  }
+
+  if (rawType === 'custom') {
+    const customName = normalizeString(record.name) || normalizeString(record.custom?.name);
+    const functionName = shortenToolName(
+      customName === APPLY_PATCH_TOOL_NAME
+        ? applyPatchProxyToolName('batch')
+        : customName,
       toolNameMap,
     );
     if (!functionName) {
@@ -669,6 +1019,29 @@ function normalizeBuiltinToolType(
     default:
       return '';
   }
+}
+
+function convertResponsesBuiltinToolToChatTool(
+  tool: JsonRecord,
+  providerKind?: string | null,
+  providerCapabilities: OpenAICompatibleProviderCapabilities | null = null,
+  builtinWebSearchTransport: 'openai_tool' | 'chat_enable_search' = 'openai_tool',
+): JsonRecord | null {
+  if (!tool || typeof tool !== 'object') {
+    return null;
+  }
+  const normalizedBuiltinType = normalizeBuiltinToolType(
+    tool.type,
+    providerKind,
+    providerCapabilities,
+    builtinWebSearchTransport,
+  );
+  return normalizedBuiltinType
+    ? omitUndefined({
+      ...tool,
+      type: normalizedBuiltinType,
+    })
+    : null;
 }
 
 function isBuiltinToolType(type: unknown): boolean {
@@ -759,13 +1132,14 @@ function translateChatCompletionStreamData(data: string, state: StreamState): Js
     const delta = choice?.delta ?? {};
     const reasoningDelta = typeof delta?.reasoning_content === 'string' ? delta.reasoning_content : '';
     const contentDelta = typeof delta?.content === 'string' ? delta.content : '';
-    if (contentDelta) {
-      events.push(...appendMessageDelta(state, choiceIndex, contentDelta));
-    }
     if (reasoningDelta) {
       events.push(...appendReasoningDelta(state, choiceIndex, reasoningDelta));
     }
+    if (contentDelta) {
+      events.push(...appendMessageDelta(state, choiceIndex, contentDelta));
+    }
     for (const toolCallDelta of normalizeArray(delta?.tool_calls)) {
+      events.push(...flushInlineThinkAtBoundary(state, choiceIndex));
       events.push(...appendToolCallDelta(state, choiceIndex, toolCallDelta));
     }
     const finishReason = normalizeString(choice?.finish_reason);
@@ -787,6 +1161,7 @@ function createStreamState(options: ResponsesSseTranslateOptions): StreamState {
     output: [],
     nextOutputIndex: 0,
     messageStates: new Map(),
+    inlineThinkStates: new Map(),
     reasoningStates: new Map(),
     toolCalls: new Map(),
     createdEmitted: false,
@@ -798,6 +1173,7 @@ function createStreamState(options: ResponsesSseTranslateOptions): StreamState {
       normalizeString(options.request?.model) || null,
     ),
     reverseToolNameMap: buildReverseToolNameMap(options.request ?? {}),
+    toolContext: buildCodexToolContext(options.request?.tools),
   };
 }
 
@@ -828,6 +1204,35 @@ function ensureStreamStarted(state: StreamState): JsonRecord[] {
 }
 
 function appendMessageDelta(state: StreamState, choiceIndex: number, delta: string): JsonRecord[] {
+  const inlineState = state.inlineThinkStates.get(choiceIndex);
+  if (inlineState?.mode === 'text') {
+    return appendOutputTextDelta(state, choiceIndex, delta);
+  }
+
+  const detector = inlineState ?? { mode: 'detecting' as InlineThinkMode, buffer: '' };
+  state.inlineThinkStates.set(choiceIndex, detector);
+
+  if (detector.mode === 'detecting') {
+    detector.buffer += delta;
+    const decision = leadingThinkPrefixDecision(detector.buffer);
+    if (decision === 'need_more') {
+      return [];
+    }
+    if (decision === 'reasoning') {
+      detector.mode = 'reasoning';
+      return drainCompleteInlineThink(state, choiceIndex, detector);
+    }
+    detector.mode = 'text';
+    const text = detector.buffer;
+    detector.buffer = '';
+    return appendOutputTextDelta(state, choiceIndex, text);
+  }
+
+  detector.buffer += delta;
+  return drainCompleteInlineThink(state, choiceIndex, detector);
+}
+
+function appendOutputTextDelta(state: StreamState, choiceIndex: number, delta: string): JsonRecord[] {
   const events: JsonRecord[] = [];
   const reasoningState = state.reasoningStates.get(choiceIndex);
   if (reasoningState && !reasoningState.done) {
@@ -907,6 +1312,7 @@ function appendReasoningDelta(state: StreamState, choiceIndex: number, delta: st
       id: reasoningState.id,
       type: 'reasoning',
       status: 'in_progress',
+      reasoning_content: '',
       summary: [],
     });
   }
@@ -976,22 +1382,15 @@ function appendToolCallDelta(state: StreamState, choiceIndex: number, delta: Jso
     const callId = normalizeString(delta.id);
     if (callId) {
       toolCall.callId = callId;
-      toolCall.id = buildFunctionCallItemId(callId);
+      toolCall.id = buildStreamToolCallItemId(toolCall.name, callId, state.toolContext);
       toolCall.outputIndex = allocateOutputIndex(state);
-      state.output.push({
-        id: toolCall.id,
-        type: 'function_call',
-        status: 'in_progress',
-        call_id: toolCall.callId,
-        name: toolCall.name,
-        arguments: '',
-      });
+      state.output.push(buildStreamToolCallOutputItem(toolCall, state.toolContext));
     }
   }
   const item = toolCall.outputIndex !== null ? state.output[toolCall.outputIndex] : null;
   if (item) {
     item.call_id = toolCall.callId;
-    item.name = toolCall.name;
+    updateStreamToolCallOutputItem(item, toolCall, state.toolContext);
   }
   if (!toolCall.added && toolCall.outputIndex !== null && item) {
     toolCall.added = true;
@@ -1003,11 +1402,16 @@ function appendToolCallDelta(state: StreamState, choiceIndex: number, delta: Jso
   }
   if (argsDelta) {
     toolCall.arguments += argsDelta;
-    if (item) {
+    if (item && !isCustomToolProxy(state.toolContext, toolCall.name)) {
       item.arguments = toolCall.arguments;
     }
   }
-  if (argsDelta && toolCall.id && toolCall.outputIndex !== null) {
+  if (
+    argsDelta
+    && toolCall.id
+    && toolCall.outputIndex !== null
+    && !isCustomToolProxy(state.toolContext, toolCall.name)
+  ) {
     events.push(withSequence(state, {
       type: 'response.function_call_arguments.delta',
       item_id: toolCall.id,
@@ -1067,6 +1471,9 @@ function finishStreamState(state: StreamState): JsonRecord[] {
 function finishOpenItems(state: StreamState): JsonRecord[] {
   const events: JsonRecord[] = [];
   const closers: Array<{ outputIndex: number; run: () => JsonRecord[] }> = [];
+  for (const choiceIndex of state.inlineThinkStates.keys()) {
+    events.push(...flushInlineThinkAtBoundary(state, choiceIndex));
+  }
   for (const [choiceIndex, reasoningState] of state.reasoningStates.entries()) {
     if (!reasoningState.done) {
       closers.push({
@@ -1115,16 +1522,9 @@ function repairStreamToolCallIdentity(state: StreamState, toolCall: StreamToolCa
   }
   const callId = normalizeString(toolCall.callId) || `call_${crypto.randomUUID()}`;
   toolCall.callId = callId;
-  toolCall.id = buildFunctionCallItemId(callId);
+  toolCall.id = buildStreamToolCallItemId(toolCall.name, callId, state.toolContext);
   toolCall.outputIndex = allocateOutputIndex(state);
-  state.output.push({
-    id: toolCall.id,
-    type: 'function_call',
-    status: 'in_progress',
-    call_id: callId,
-    name: toolCall.name || 'tool',
-    arguments: toolCall.arguments || '',
-  });
+  state.output.push(buildStreamToolCallOutputItem(toolCall, state.toolContext));
 }
 
 function finishReasoningState(state: StreamState, choiceIndex: number): JsonRecord[] {
@@ -1141,6 +1541,7 @@ function finishReasoningState(state: StreamState, choiceIndex: number): JsonReco
     : [];
   const item = state.output[reasoningState.outputIndex];
   item.status = 'completed';
+  item.reasoning_content = reasoningState.text;
   item.summary = summary;
   return [
     withSequence(state, {
@@ -1213,6 +1614,24 @@ function finishToolCallState(state: StreamState, key: string): JsonRecord[] {
   toolCall.done = true;
   const item = state.output[toolCall.outputIndex];
   item.status = 'completed';
+  if (isCustomToolProxy(state.toolContext, toolCall.name)) {
+    const input = reconstructStreamCustomToolCallInput(toolCall, state.toolContext);
+    item.input = input;
+    return [
+      withSequence(state, {
+        type: 'response.custom_tool_call_input.delta',
+        item_id: toolCall.id,
+        call_id: toolCall.callId,
+        output_index: toolCall.outputIndex,
+        delta: input,
+      }),
+      withSequence(state, {
+        type: 'response.output_item.done',
+        output_index: toolCall.outputIndex,
+        item: cloneJson(item),
+      }),
+    ];
+  }
   item.arguments = toolCall.arguments || '{}';
   return [
     withSequence(state, {
@@ -1971,14 +2390,58 @@ function normalizePathSegments(path: string): string[] {
 }
 
 function buildToolNameMap(request: JsonRecord | null | undefined): ToolNameMap {
-  const names = normalizeArray(request?.tools)
-    .filter((tool) => normalizeString(tool?.type) === 'function')
-    .map((tool) => normalizeString(tool?.name))
-    .filter(Boolean);
+  const names = collectChatToolNamesForRequest(request);
   if (names.length === 0) {
     return new Map();
   }
   return buildShortNameMap(names);
+}
+
+function collectChatToolNamesForRequest(request: JsonRecord | null | undefined): string[] {
+  const names: string[] = [];
+  for (const tool of normalizeArray(request?.tools)) {
+    if (typeof tool === 'string') {
+      names.push(tool);
+      continue;
+    }
+    if (!tool || typeof tool !== 'object') {
+      continue;
+    }
+    const record = tool as JsonRecord;
+    const type = normalizeString(record.type);
+    if (type === 'function') {
+      names.push(normalizeString(record.name) || normalizeString(record.function?.name));
+      continue;
+    }
+    if (type === 'custom') {
+      const name = normalizeString(record.name);
+      if (name === APPLY_PATCH_TOOL_NAME) {
+        names.push(
+          applyPatchProxyToolName('add_file'),
+          applyPatchProxyToolName('delete_file'),
+          applyPatchProxyToolName('update_file'),
+          applyPatchProxyToolName('replace_file'),
+          applyPatchProxyToolName('batch'),
+        );
+      } else {
+        names.push(name);
+      }
+      continue;
+    }
+    if (type === 'namespace') {
+      const namespace = normalizeString(record.name);
+      for (const child of normalizeArray(record.tools)) {
+        if (normalizeString(child?.type) === 'function') {
+          names.push(flattenNamespaceToolName(namespace, normalizeString(child?.name)));
+        }
+      }
+      continue;
+    }
+    if (type === 'web_search' || type === 'local_shell' || type === 'computer_use') {
+      names.push(normalizeString(record.name) || type);
+    }
+  }
+  return names.filter(Boolean);
 }
 
 function buildReverseToolNameMap(request: JsonRecord | null | undefined): ToolNameMap {

@@ -23,6 +23,22 @@ function createEventStreamResponse(chunks: unknown[]): Response {
   });
 }
 
+function createRawEventStreamResponse(chunks: Uint8Array[]): Response {
+  return new Response(new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(chunk);
+      }
+      controller.close();
+    },
+  }), {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+    },
+  });
+}
+
 function parseSseText(text: string): Array<{ event: string; data: any }> {
   const blocks = text.split('\n\n').map((entry) => entry.trim()).filter(Boolean);
   const parsed: Array<{ event: string; data: any }> = [];
@@ -1030,6 +1046,84 @@ test('adapter server streams codex-proxy style event ordering and keeps previous
     assert.equal(completedEvent.response.previous_response_id, 'resp_parent_stream_1');
     assert.equal(completedEvent.response.output[1].type, 'function_call');
     assert.equal(completedEvent.response.output[1].arguments, '{"q":"x"}');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('adapter server stream parser preserves utf8 across byte chunk boundaries', async () => {
+  const encoder = new TextEncoder();
+  const payload = {
+    id: 'chatcmpl_utf8',
+    created: 1_700_000_230,
+    model: 'utf8-model',
+    choices: [{
+      index: 0,
+      delta: {
+        content: '你好',
+      },
+      finish_reason: 'stop',
+    }],
+  };
+  const sse = `data: ${JSON.stringify(payload)}\r\n\r\ndata: [DONE]\r\n\r\n`;
+  const split = encoder.encode(sse.slice(0, sse.indexOf('好'))).length + 1;
+  const bytes = encoder.encode(sse);
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    fetchImpl: (async () => createRawEventStreamResponse([
+      bytes.slice(0, split),
+      bytes.slice(split),
+    ])) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'utf8-model',
+        input: 'say hello',
+        stream: true,
+      }),
+    });
+    const text = await response.text();
+    const events = parseSseText(text);
+    assert.equal(response.status, 200);
+    assert.equal(events.some((entry) => entry.event === 'response.output_text.delta' && entry.data.delta === '你好'), true);
+    assert.equal(events.at(-1)?.data.response.output[0].content[0].text, '你好');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('adapter server stream parser maps upstream event error frames to Responses failure', async () => {
+  const encoder = new TextEncoder();
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    fetchImpl: (async () => createRawEventStreamResponse([
+      encoder.encode('event: error\ndata: {"message":"bad stream","code":"bad_stream"}\n\n'),
+    ])) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'error-stream-model',
+        input: 'stream',
+        stream: true,
+      }),
+    });
+    const text = await response.text();
+    const events = parseSseText(text);
+    const failed = events.find((entry) => entry.event === 'response.failed')?.data;
+    assert.equal(response.status, 200);
+    assert.equal(failed.response.status, 'failed');
+    assert.equal(failed.response.error.message, 'bad stream');
+    assert.equal(failed.response.error.code, 'bad_stream');
   } finally {
     await server.stop();
   }

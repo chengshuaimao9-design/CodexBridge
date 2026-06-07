@@ -5,6 +5,8 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   createCodexProviderRelayFileSearchExecutor,
+  createCodexProviderRelayMemoryFileSearchSource,
+  createCodexProviderRelaySqliteFtsFileSearchSource,
   type CodexProviderRelayFileSearchExecutorContent,
   type CodexProviderRelayFileSearchSource,
 } from '../src/index.js';
@@ -89,27 +91,16 @@ test('local file_search executor can omit snippet content', async () => {
 
 test('file_search executor aggregates explicit sources without host coupling', async () => {
   const root = await createTempWorkspace();
-  const memorySource: CodexProviderRelayFileSearchSource = {
+  const memorySource = createCodexProviderRelayMemoryFileSearchSource({
     name: 'memory-documents',
-    type: 'memory-documents',
-    async search(request) {
-      await request.emitDelta?.('memory source searched', {
-        query: request.query,
-      });
-      return {
-        results: [{
-          title: 'Memory doc',
-          uri: 'memory://doc-1',
-          path: 'memory/doc-1.md',
-          score: 99,
-          snippets: [{
-            line: 1,
-            text: 'A memory document about hosted file search.',
-          }],
-        }],
-      };
-    },
-  };
+    documents: [{
+      id: 'doc-1',
+      title: 'Memory doc',
+      uri: 'memory://doc-1',
+      path: 'memory/doc-1.md',
+      content: 'A memory document about hosted file search.',
+    }],
+  });
   const deltas: any[] = [];
   const executor = createCodexProviderRelayFileSearchExecutor({
     sources: [
@@ -138,7 +129,150 @@ test('file_search executor aggregates explicit sources without host coupling', a
   assert.equal(content.results[0].source, 'memory-documents');
   assert.equal(content.results.some((entry) => entry.source === 'workspace'), true);
   assert.equal(deltas.some((entry) => entry.delta === 'searching source'), true);
-  assert.equal(deltas.some((entry) => entry.delta === 'memory source searched'), true);
+  assert.equal(deltas.some((entry) => entry.delta === 'memory document matched'), true);
+});
+
+test('memory file_search source searches title and content with optional snippets', async () => {
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayMemoryFileSearchSource({
+        documents: [{
+          id: 'session-summary',
+          title: 'CodexNext session summary',
+          uri: 'memory://session-summary',
+          path: 'summaries/session.md',
+          content: [
+            'The relay supports memory documents.',
+            'Hosted file search can read project summaries.',
+          ].join('\n'),
+        }, {
+          id: 'other',
+          title: 'Other note',
+          path: 'notes/other.md',
+          content: 'No matching content here.',
+        }],
+      }),
+    ],
+    maxResults: 3,
+  });
+
+  const result = await executor(baseRequest({
+    query: 'CodexNext project summaries',
+    path_glob: 'summaries/*',
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.equal(content.provider, 'memory-documents');
+  assert.equal(content.results.length, 1);
+  assert.equal(content.results[0].path, 'summaries/session.md');
+  assert.equal(content.results[0].sourceType, 'memory-documents');
+  assert.match(content.results[0].snippets.map((snippet) => snippet.text).join('\n'), /project summaries/u);
+});
+
+test('memory file_search source can omit snippets', async () => {
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayMemoryFileSearchSource({
+        includeContent: false,
+        documents: [{
+          id: 'doc-1',
+          title: 'Hosted search',
+          content: 'Hosted file search should match without returning snippets.',
+        }],
+      }),
+    ],
+  });
+
+  const result = await executor(baseRequest({
+    query: 'hosted search',
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.equal(content.results.length, 1);
+  assert.equal(content.results[0].snippets.length, 0);
+});
+
+test('sqlite fts file_search source queries injected database and normalizes rows', async () => {
+  const executed: Array<{ sql: string; params: unknown[] }> = [];
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelaySqliteFtsFileSearchSource({
+        name: 'project-index',
+        table: 'documents_fts',
+        database: {
+          all(sql, params) {
+            executed.push({ sql, params });
+            return [{
+              id: 'doc-1',
+              title: 'SQLite FTS Guide',
+              uri: 'sqlite://doc-1',
+              path: 'docs/sqlite.md',
+              content: [
+                'SQLite FTS stores project summaries.',
+                'Hosted file search can query persisted indexes.',
+              ].join('\n'),
+              score: 42,
+            }, {
+              id: 'doc-2',
+              title: 'Filtered note',
+              path: 'notes/filtered.md',
+              content: 'SQLite FTS should be filtered by path glob.',
+              score: 99,
+            }];
+          },
+        },
+      }),
+    ],
+    maxResults: 5,
+  });
+
+  const result = await executor(baseRequest({
+    query: 'SQLite project summaries',
+    path_glob: 'docs/*',
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.equal(content.provider, 'sqlite-fts');
+  assert.equal(content.results.length, 1);
+  assert.equal(content.results[0].source, 'project-index');
+  assert.equal(content.results[0].sourceType, 'sqlite-fts');
+  assert.equal(content.results[0].path, 'docs/sqlite.md');
+  assert.ok(content.results[0].score > 42);
+  assert.equal(executed.length, 1);
+  assert.match(executed[0].sql, /FROM "documents_fts"/u);
+  assert.match(executed[0].sql, /"documents_fts" MATCH \?/u);
+  assert.match(executed[0].sql, /"path" GLOB \?/u);
+  assert.deepEqual(executed[0].params, ['"sqlite" OR "project" OR "summaries"', 'docs/*', 5]);
+});
+
+test('sqlite fts file_search source supports includeContent false and custom query function', async () => {
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelaySqliteFtsFileSearchSource({
+        table: 'documents_fts',
+        includeContent: false,
+        query(request) {
+          assert.match(request.sql, /LIMIT \?/u);
+          assert.equal(request.ftsQuery, '"hosted" OR "sqlite"');
+          return [{
+            id: 'doc-1',
+            title: 'Hosted SQLite',
+            path: 'docs/hosted-sqlite.md',
+            content: 'Hosted SQLite file search returns no snippets when disabled.',
+            score: 10,
+          }];
+        },
+      }),
+    ],
+  });
+
+  const result = await executor(baseRequest({
+    query: 'hosted sqlite',
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.equal(content.results.length, 1);
+  assert.equal(content.results[0].snippets.length, 0);
 });
 
 test('file_search executor applies total payload bounds across sources', async () => {

@@ -44,11 +44,13 @@ Last updated: 2026-06-07
 - [x] Relay-emulated `file_search` protocol loop: `file_search` declarations can be converted into relay-owned Chat function tools, executed through the package executor registry, and streamed through the same internal tool-call continuation path as `web_search`.
 - [x] Reusable local filesystem `file_search` executor: explicit roots, default dependency/build/binary ignores, symlink opt-in, bounded scan limits, bounded file reads, snippets, and optional full content are implemented without depending on CodexBridge host state.
 - [x] Generic `file_search` source contract: the executor now accepts pluggable `sources`, preserves `roots` as a local-fs shortcut, aggregates cross-source results, applies a total payload bound, and keeps source implementations independent from CodexBridge host state.
+- [x] Reusable memory-documents `file_search` source: hosts can pass explicit in-memory documents with `id`, `title`, `uri`, `path`, and `content`, and the source reuses the same title/content scoring, snippets, `path_glob`, and include-content behavior as the local filesystem source.
+- [x] Reusable SQLite FTS `file_search` source: hosts can pass an injected `database.all(sql, params)` or custom `query()` function, while the relay package owns safe identifier validation, FTS query construction, path filtering, row normalization, snippets, and include-content behavior without depending on a sqlite driver.
 
 ### Still To Do
 
 - [ ] Split `responses_adapter.ts` into the proposed smaller modules: `responses_to_chat.ts`, `chat_to_responses.ts`, and `chat_sse_to_responses.ts`.
-- [ ] Add memory-documents, sqlite FTS, semantic/vector, and remote-docs `file_search` source adapters as separate opt-ins behind the existing executor contract.
+- [ ] Add semantic/vector and remote-docs `file_search` source adapters as separate opt-ins behind the existing executor contract.
 - [ ] Add concrete hosted-tool adapters for code interpreter, image generation, and computer-use as separate opt-ins.
 
 ## Source Baseline

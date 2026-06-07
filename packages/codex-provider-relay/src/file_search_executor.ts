@@ -25,7 +25,9 @@ export interface CodexProviderRelayFileSearchExecutorOptions {
 
 export type CodexProviderRelayFileSearchSourceInput =
   | CodexProviderRelayFileSearchSource
-  | CodexProviderRelayLocalFileSearchSourceOptions;
+  | CodexProviderRelayLocalFileSearchSourceOptions
+  | CodexProviderRelayMemoryFileSearchSourceOptions
+  | CodexProviderRelaySqliteFtsFileSearchSourceOptions;
 
 export interface CodexProviderRelayFileSearchSource {
   name: string;
@@ -43,7 +45,7 @@ export interface CodexProviderRelayFileSearchSourceRequest {
   maxBytesPerFile: number;
   maxPayloadBytes: number;
   snippetLines: number;
-  includeContent: boolean;
+  includeContent: boolean | null;
   emitDelta?: CodexProviderRelayHostedToolDeltaEmitter | null;
   toolRequest: CodexProviderRelayHostedToolExecutionRequest;
 }
@@ -66,6 +68,66 @@ export interface CodexProviderRelayLocalFileSearchSourceOptions {
   followSymlinks?: boolean | null;
   ignoreDirectories?: string[] | null;
   ignoreExtensions?: string[] | null;
+}
+
+export interface CodexProviderRelayMemoryFileSearchSourceOptions {
+  type?: 'memory-documents' | null;
+  name?: string | null;
+  documents: CodexProviderRelayMemoryFileSearchDocument[];
+  maxDocumentsScanned?: number | null;
+  maxBytesPerDocument?: number | null;
+  snippetLines?: number | null;
+  includeContent?: boolean | null;
+}
+
+export interface CodexProviderRelayMemoryFileSearchDocument {
+  id: string;
+  title?: string | null;
+  uri?: string | null;
+  path?: string | null;
+  content: string;
+  metadata?: JsonRecord | null;
+}
+
+export interface CodexProviderRelaySqliteFtsFileSearchSourceOptions {
+  type?: 'sqlite-fts' | null;
+  name?: string | null;
+  table: string;
+  database?: CodexProviderRelaySqliteFtsDatabase | null;
+  query?: CodexProviderRelaySqliteFtsQueryFunction | null;
+  columns?: CodexProviderRelaySqliteFtsColumns | null;
+  metadataColumns?: string[] | null;
+  maxRows?: number | null;
+  maxBytesPerDocument?: number | null;
+  snippetLines?: number | null;
+  includeContent?: boolean | null;
+}
+
+export interface CodexProviderRelaySqliteFtsDatabase {
+  all(sql: string, params: unknown[]): Promise<JsonRecord[]> | JsonRecord[];
+}
+
+export type CodexProviderRelaySqliteFtsQueryFunction = (
+  request: CodexProviderRelaySqliteFtsQueryRequest,
+) => Promise<JsonRecord[]> | JsonRecord[];
+
+export interface CodexProviderRelaySqliteFtsQueryRequest {
+  sql: string;
+  params: unknown[];
+  query: string;
+  ftsQuery: string;
+  pathGlob: string;
+  maxResults: number;
+  terms: string[];
+}
+
+export interface CodexProviderRelaySqliteFtsColumns {
+  id?: string | null;
+  title?: string | null;
+  uri?: string | null;
+  path?: string | null;
+  content?: string | null;
+  score?: string | null;
 }
 
 export interface CodexProviderRelayFileSearchResult {
@@ -97,7 +159,7 @@ interface NormalizedFileSearchOptions {
   maxBytesPerFile: number;
   maxPayloadBytes: number;
   snippetLines: number;
-  includeContent: boolean;
+  includeContent: boolean | null;
 }
 
 interface NormalizedLocalFileSearchOptions {
@@ -111,6 +173,39 @@ interface NormalizedLocalFileSearchOptions {
   followSymlinks: boolean;
   ignoreDirectories: Set<string>;
   ignoreExtensions: Set<string>;
+}
+
+interface NormalizedMemoryFileSearchOptions {
+  name: string;
+  type: 'memory-documents';
+  documents: NormalizedMemoryFileSearchDocument[];
+  maxDocumentsScanned: number;
+  maxBytesPerDocument: number;
+  snippetLines: number;
+  includeContent: boolean;
+}
+
+interface NormalizedMemoryFileSearchDocument {
+  id: string;
+  title: string;
+  uri: string;
+  path: string;
+  content: string;
+  metadata: JsonRecord | null;
+}
+
+interface NormalizedSqliteFtsFileSearchOptions {
+  name: string;
+  type: 'sqlite-fts';
+  table: string;
+  tableMatchTarget: string;
+  query: CodexProviderRelaySqliteFtsQueryFunction;
+  columns: Required<CodexProviderRelaySqliteFtsColumns>;
+  metadataColumns: string[];
+  maxRows: number;
+  maxBytesPerDocument: number;
+  snippetLines: number;
+  includeContent: boolean;
 }
 
 interface LocalFileSearchRoot {
@@ -329,6 +424,189 @@ export function createCodexProviderRelayLocalFileSearchSource(
   };
 }
 
+export function createCodexProviderRelayMemoryFileSearchSource(
+  options: CodexProviderRelayMemoryFileSearchSourceOptions,
+): CodexProviderRelayFileSearchSource {
+  const normalizedOptions = normalizeMemoryFileSearchOptions(options);
+  return {
+    name: normalizedOptions.name,
+    type: 'memory-documents',
+    async search(request: CodexProviderRelayFileSearchSourceRequest): Promise<CodexProviderRelayFileSearchSourceResult> {
+      const maxResults = request.maxResults;
+      const includeContent = typeof request.includeContent === 'boolean'
+        ? request.includeContent
+        : normalizedOptions.includeContent;
+      const maxBytesPerDocument = Math.min(request.maxBytesPerFile, normalizedOptions.maxBytesPerDocument);
+      const snippetLines = Math.min(request.snippetLines, normalizedOptions.snippetLines);
+
+      await request.emitDelta?.('scanning memory documents', {
+        source: normalizedOptions.name,
+        documentCount: normalizedOptions.documents.length,
+        maxResults,
+      });
+
+      const results: CodexProviderRelayFileSearchResult[] = [];
+      let scannedDocuments = 0;
+      let skippedDocuments = 0;
+      for (const document of normalizedOptions.documents) {
+        if (scannedDocuments >= normalizedOptions.maxDocumentsScanned || results.length >= maxResults) {
+          break;
+        }
+        if (request.pathGlob && !pathMatchesGlob(document.path, request.pathGlob)) {
+          continue;
+        }
+        const documentBytes = Buffer.byteLength(document.content, 'utf8');
+        if (documentBytes > maxBytesPerDocument) {
+          skippedDocuments += 1;
+          continue;
+        }
+        scannedDocuments += 1;
+        const result = searchTextContent({
+          title: document.title,
+          uri: document.uri,
+          path: document.path,
+          root: null,
+          sourceName: normalizedOptions.name,
+          sourceType: 'memory-documents',
+          content: document.content,
+          terms: request.terms,
+          includeContent,
+          snippetLines,
+        });
+        if (result) {
+          results.push(result);
+          await request.emitDelta?.('memory document matched', {
+            source: normalizedOptions.name,
+            path: result.path,
+            score: result.score,
+            resultCount: results.length,
+          });
+        }
+      }
+
+      results.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+      return {
+        results: results.slice(0, maxResults),
+        scannedFiles: scannedDocuments,
+        skippedFiles: skippedDocuments,
+        metadata: {
+          provider: 'memory-documents',
+          source: normalizedOptions.name,
+          scannedDocuments,
+          skippedDocuments,
+        },
+      };
+    },
+  };
+}
+
+export function createCodexProviderRelaySqliteFtsFileSearchSource(
+  options: CodexProviderRelaySqliteFtsFileSearchSourceOptions,
+): CodexProviderRelayFileSearchSource {
+  const normalizedOptions = normalizeSqliteFtsFileSearchOptions(options);
+  return {
+    name: normalizedOptions.name,
+    type: 'sqlite-fts',
+    async search(request: CodexProviderRelayFileSearchSourceRequest): Promise<CodexProviderRelayFileSearchSourceResult> {
+      const maxResults = request.maxResults;
+      const includeContent = typeof request.includeContent === 'boolean'
+        ? request.includeContent
+        : normalizedOptions.includeContent;
+      const maxBytesPerDocument = Math.min(request.maxBytesPerFile, normalizedOptions.maxBytesPerDocument);
+      const snippetLines = Math.min(request.snippetLines, normalizedOptions.snippetLines);
+      const ftsQuery = sqliteFtsQueryFromTerms(request.terms);
+      if (!ftsQuery) {
+        return {
+          results: [],
+          scannedFiles: 0,
+          skippedFiles: 0,
+        };
+      }
+      const querySpec = buildSqliteFtsQuery({
+        options: normalizedOptions,
+        ftsQuery,
+        pathGlob: request.pathGlob,
+        maxResults: Math.min(maxResults, normalizedOptions.maxRows),
+      });
+
+      await request.emitDelta?.('querying sqlite fts', {
+        source: normalizedOptions.name,
+        table: normalizedOptions.table,
+        maxResults,
+      });
+
+      const rows = await normalizedOptions.query({
+        sql: querySpec.sql,
+        params: querySpec.params,
+        query: request.query,
+        ftsQuery,
+        pathGlob: request.pathGlob,
+        maxResults,
+        terms: request.terms,
+      });
+
+      const results: CodexProviderRelayFileSearchResult[] = [];
+      let scannedRows = 0;
+      let skippedRows = 0;
+      for (const row of Array.isArray(rows) ? rows : []) {
+        if (scannedRows >= normalizedOptions.maxRows || results.length >= maxResults) {
+          break;
+        }
+        const document = sqliteFtsRowToMemoryDocument(row, normalizedOptions);
+        if (!document) {
+          skippedRows += 1;
+          continue;
+        }
+        if (request.pathGlob && !pathMatchesGlob(document.path, request.pathGlob)) {
+          continue;
+        }
+        const documentBytes = Buffer.byteLength(document.content, 'utf8');
+        if (documentBytes > maxBytesPerDocument) {
+          skippedRows += 1;
+          continue;
+        }
+        scannedRows += 1;
+        const result = searchTextContent({
+          title: document.title,
+          uri: document.uri,
+          path: document.path,
+          root: null,
+          sourceName: normalizedOptions.name,
+          sourceType: 'sqlite-fts',
+          content: document.content,
+          terms: request.terms,
+          includeContent,
+          snippetLines,
+        });
+        if (result) {
+          result.score += sqliteFtsScoreFromRow(row, normalizedOptions);
+          results.push(result);
+          await request.emitDelta?.('sqlite fts row matched', {
+            source: normalizedOptions.name,
+            path: result.path,
+            score: result.score,
+            resultCount: results.length,
+          });
+        }
+      }
+
+      results.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+      return {
+        results: results.slice(0, maxResults),
+        scannedFiles: scannedRows,
+        skippedFiles: skippedRows,
+        metadata: {
+          provider: 'sqlite-fts',
+          source: normalizedOptions.name,
+          table: normalizedOptions.table,
+          scannedRows,
+          skippedRows,
+        },
+      };
+    },
+  };
+}
+
 function normalizeFileSearchOptions(
   options: CodexProviderRelayFileSearchExecutorOptions,
 ): NormalizedFileSearchOptions {
@@ -342,7 +620,7 @@ function normalizeFileSearchOptions(
     maxBytesPerFile: clampInteger(options.maxBytesPerFile, 1_024, 2 * 1024 * 1024, 256 * 1024),
     maxPayloadBytes: clampInteger(options.maxPayloadBytes, 1_024, 2 * 1024 * 1024, 128 * 1024),
     snippetLines: clampInteger(options.snippetLines, 1, 8, 2),
-    includeContent: options.includeContent !== false,
+    includeContent: typeof options.includeContent === 'boolean' ? options.includeContent : null,
   };
 }
 
@@ -388,7 +666,13 @@ function normalizeFileSearchSource(
   if (source && Array.isArray((source as CodexProviderRelayLocalFileSearchSourceOptions).roots)) {
     return createCodexProviderRelayLocalFileSearchSource(source as CodexProviderRelayLocalFileSearchSourceOptions);
   }
-  throw new Error('file_search sources must be source adapters or local-fs source options.');
+  if (source && Array.isArray((source as CodexProviderRelayMemoryFileSearchSourceOptions).documents)) {
+    return createCodexProviderRelayMemoryFileSearchSource(source as CodexProviderRelayMemoryFileSearchSourceOptions);
+  }
+  if (source && normalizeString((source as CodexProviderRelaySqliteFtsFileSearchSourceOptions).table)) {
+    return createCodexProviderRelaySqliteFtsFileSearchSource(source as CodexProviderRelaySqliteFtsFileSearchSourceOptions);
+  }
+  throw new Error('file_search sources must be source adapters, local-fs source options, memory-documents source options, or sqlite-fts source options.');
 }
 
 async function normalizeLocalFileSearchOptions(
@@ -432,6 +716,204 @@ function assertExplicitLocalFileSearchRoots(value: unknown): void {
   if (!Array.isArray(value) || value.map((root) => normalizeString(root)).filter(Boolean).length === 0) {
     throw new Error('file_search local-fs source requires at least one explicit root.');
   }
+}
+
+function normalizeMemoryFileSearchOptions(
+  options: CodexProviderRelayMemoryFileSearchSourceOptions,
+): NormalizedMemoryFileSearchOptions {
+  const documents = Array.isArray(options.documents)
+    ? options.documents.map(normalizeMemoryFileSearchDocument).filter(Boolean)
+    : [];
+  return {
+    name: normalizeString(options.name) || 'memory-documents',
+    type: 'memory-documents',
+    documents,
+    maxDocumentsScanned: clampInteger(options.maxDocumentsScanned, 1, 100_000, 5_000),
+    maxBytesPerDocument: clampInteger(options.maxBytesPerDocument, 1_024, 2 * 1024 * 1024, 256 * 1024),
+    snippetLines: clampInteger(options.snippetLines, 1, 8, 2),
+    includeContent: options.includeContent !== false,
+  };
+}
+
+function normalizeMemoryFileSearchDocument(
+  document: CodexProviderRelayMemoryFileSearchDocument,
+): NormalizedMemoryFileSearchDocument | null {
+  if (!document || typeof document !== 'object') {
+    return null;
+  }
+  const id = normalizeString(document.id);
+  const content = normalizeString(document.content);
+  if (!id || !content) {
+    return null;
+  }
+  const pathValue = normalizeRelativePath(firstNonEmptyString([
+    document.path,
+    document.title,
+    id,
+  ]));
+  const safePath = pathValue && !path.isAbsolute(pathValue) && !pathValue.split('/').includes('..')
+    ? pathValue
+    : `memory/${id}`;
+  return {
+    id,
+    title: firstNonEmptyString([document.title, safePath, id]),
+    uri: normalizeString(document.uri) || `memory://${encodeURIComponent(id)}`,
+    path: safePath,
+    content,
+    metadata: document.metadata && typeof document.metadata === 'object'
+      ? document.metadata
+      : null,
+  };
+}
+
+function normalizeSqliteFtsFileSearchOptions(
+  options: CodexProviderRelaySqliteFtsFileSearchSourceOptions,
+): NormalizedSqliteFtsFileSearchOptions {
+  const table = normalizeSqlIdentifier(options.table, 'sqlite-fts table');
+  const query = normalizeSqliteFtsQuery(options);
+  const columns = {
+    id: normalizeSqlIdentifier(options.columns?.id || 'id', 'sqlite-fts id column'),
+    title: normalizeSqlIdentifier(options.columns?.title || 'title', 'sqlite-fts title column'),
+    uri: normalizeSqlIdentifier(options.columns?.uri || 'uri', 'sqlite-fts uri column'),
+    path: normalizeSqlIdentifier(options.columns?.path || 'path', 'sqlite-fts path column'),
+    content: normalizeSqlIdentifier(options.columns?.content || 'content', 'sqlite-fts content column'),
+    score: normalizeSqlIdentifier(options.columns?.score || 'score', 'sqlite-fts score column'),
+  };
+  return {
+    name: normalizeString(options.name) || 'sqlite-fts',
+    type: 'sqlite-fts',
+    table,
+    tableMatchTarget: table,
+    query,
+    columns,
+    metadataColumns: Array.isArray(options.metadataColumns)
+      ? options.metadataColumns.map((column) => normalizeSqlIdentifier(column, 'sqlite-fts metadata column'))
+      : [],
+    maxRows: clampInteger(options.maxRows, 1, 1_000, 50),
+    maxBytesPerDocument: clampInteger(options.maxBytesPerDocument, 1_024, 2 * 1024 * 1024, 256 * 1024),
+    snippetLines: clampInteger(options.snippetLines, 1, 8, 2),
+    includeContent: options.includeContent !== false,
+  };
+}
+
+function normalizeSqliteFtsQuery(
+  options: CodexProviderRelaySqliteFtsFileSearchSourceOptions,
+): CodexProviderRelaySqliteFtsQueryFunction {
+  if (typeof options.query === 'function') {
+    return options.query;
+  }
+  if (options.database && typeof options.database.all === 'function') {
+    return ({ sql, params }) => options.database!.all(sql, params);
+  }
+  throw new Error('sqlite-fts file_search source requires a query function or database.all.');
+}
+
+function buildSqliteFtsQuery({
+  options,
+  ftsQuery,
+  pathGlob,
+  maxResults,
+}: {
+  options: NormalizedSqliteFtsFileSearchOptions;
+  ftsQuery: string;
+  pathGlob: string;
+  maxResults: number;
+}): { sql: string; params: unknown[] } {
+  const params: unknown[] = [ftsQuery];
+  const selectedColumns = [
+    `${options.columns.id} AS id`,
+    `${options.columns.title} AS title`,
+    `${options.columns.uri} AS uri`,
+    `${options.columns.path} AS path`,
+    `${options.columns.content} AS content`,
+    `-bm25(${options.tableMatchTarget}) AS score`,
+    ...options.metadataColumns.map((column) => `${column} AS ${sqlAliasFromIdentifier(column)}`),
+  ];
+  const where = [`${options.tableMatchTarget} MATCH ?`];
+  if (pathGlob) {
+    where.push(`${options.columns.path} GLOB ?`);
+    params.push(pathGlob);
+  }
+  params.push(maxResults);
+  return {
+    sql: [
+      `SELECT ${selectedColumns.join(', ')}`,
+      `FROM ${options.table}`,
+      `WHERE ${where.join(' AND ')}`,
+      'ORDER BY score DESC',
+      'LIMIT ?',
+    ].join(' '),
+    params,
+  };
+}
+
+function sqliteFtsRowToMemoryDocument(
+  row: JsonRecord,
+  options: NormalizedSqliteFtsFileSearchOptions,
+): NormalizedMemoryFileSearchDocument | null {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+  const id = firstNonEmptyString([row.id, row.path, row.title]);
+  const content = normalizeString(row.content);
+  if (!id || !content) {
+    return null;
+  }
+  const rawPath = normalizeRelativePath(firstNonEmptyString([row.path, row.title, id]));
+  const safePath = rawPath && !path.isAbsolute(rawPath) && !rawPath.split('/').includes('..')
+    ? rawPath
+    : `sqlite/${id}`;
+  const metadata: JsonRecord = {};
+  for (const column of options.metadataColumns) {
+    const alias = sqlAliasFromIdentifier(column);
+    if (row[alias] !== undefined) {
+      metadata[alias] = row[alias];
+    }
+  }
+  return {
+    id,
+    title: firstNonEmptyString([row.title, safePath, id]),
+    uri: normalizeString(row.uri) || `sqlite://${encodeURIComponent(id)}`,
+    path: safePath,
+    content,
+    metadata: Object.keys(metadata).length > 0 ? metadata : null,
+  };
+}
+
+function sqliteFtsScoreFromRow(
+  row: JsonRecord,
+  options: NormalizedSqliteFtsFileSearchOptions,
+): number {
+  const score = Number(row.score ?? row[sqlAliasFromIdentifier(options.columns.score)]);
+  if (!Number.isFinite(score)) {
+    return 0;
+  }
+  return score;
+}
+
+function sqliteFtsQueryFromTerms(terms: string[]): string {
+  return terms
+    .map((term) => `"${term.replace(/"/gu, '""')}"`)
+    .join(' OR ');
+}
+
+function normalizeSqlIdentifier(value: unknown, label: string): string {
+  const raw = normalizeString(value);
+  if (!raw) {
+    throw new Error(`${label} is required.`);
+  }
+  const parts = raw.split('.');
+  if (parts.some((part) => !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(part))) {
+    throw new Error(`${label} must be a safe SQL identifier.`);
+  }
+  return parts.map((part) => `"${part}"`).join('.');
+}
+
+function sqlAliasFromIdentifier(identifier: string): string {
+  return identifier
+    .split('.')
+    .at(-1)!
+    .replace(/^"|"$/gu, '');
 }
 
 async function collectCandidateFiles(
@@ -528,13 +1010,54 @@ function searchFileContent({
   snippetLines: number;
   sourceName: string;
 }): CodexProviderRelayFileSearchResult | null {
+  return searchTextContent({
+    title: candidate.relativePath,
+    uri: pathToFileURL(candidate.absolutePath).toString(),
+    path: candidate.relativePath,
+    root: candidate.root.path,
+    sourceName,
+    sourceType: 'local-fs',
+    content,
+    terms,
+    includeContent,
+    snippetLines,
+  });
+}
+
+function searchTextContent({
+  title,
+  uri,
+  path: resultPath,
+  root,
+  sourceName,
+  sourceType,
+  content,
+  terms,
+  includeContent,
+  snippetLines,
+}: {
+  title: string;
+  uri: string;
+  path: string;
+  root: string | null;
+  sourceName: string;
+  sourceType: string;
+  content: string;
+  terms: string[];
+  includeContent: boolean;
+  snippetLines: number;
+}): CodexProviderRelayFileSearchResult | null {
   const lines = content.split(/\r?\n/u);
   const snippets: Array<{ line: number; text: string }> = [];
   let score = 0;
-  const lowerPath = candidate.relativePath.toLowerCase();
+  const lowerPath = resultPath.toLowerCase();
+  const lowerTitle = title.toLowerCase();
   for (const term of terms) {
     if (lowerPath.includes(term)) {
       score += 2;
+    }
+    if (lowerTitle.includes(term)) {
+      score += 4;
     }
   }
   for (let index = 0; index < lines.length; index += 1) {
@@ -563,12 +1086,12 @@ function searchFileContent({
     return null;
   }
   return {
-    title: candidate.relativePath,
-    uri: pathToFileURL(candidate.absolutePath).toString(),
-    path: candidate.relativePath,
-    root: candidate.root.path,
+    title,
+    uri,
+    path: resultPath,
+    root,
     source: sourceName,
-    sourceType: 'local-fs',
+    sourceType,
     score,
     snippets,
   };

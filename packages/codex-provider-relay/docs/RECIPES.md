@@ -1,0 +1,72 @@
+# Codex Provider Relay Recipes
+
+These recipes describe how a host app should wire the relay without depending on CodexBridge internals.
+
+## Mixed OpenRouter Runtime
+
+Use `profileMode: "mixed"` when Codex should talk to a local Responses adapter while the relay calls an upstream Chat Completions API.
+
+```ts
+const runtime = new CodexProviderRelayRuntime({
+  apiKey: process.env.OPENROUTER_API_KEY!,
+  upstreamBaseUrl: "https://openrouter.ai/api/v1",
+  defaultModel: "deepseek/deepseek-chat",
+  providerLabel: "openrouter",
+  profileMode: "mixed",
+  toolStrategy: "codex-local-first",
+});
+```
+
+## Relay-Emulated Hosted Tools
+
+Relay-emulated tools must be declared and registered.
+
+```ts
+hostedTools: [{ name: "web_search", mode: "relay-emulated" }],
+hostedToolExecutors: {
+  web_search: createCodexProviderRelayWebSearchExecutor({
+    provider: "tavily",
+    apiKey: process.env.TAVILY_API_KEY!,
+  }),
+}
+```
+
+The relay then exposes a function tool to Chat Completions upstreams, executes the host-provided executor, appends the tool output, and continues the model loop.
+
+## Local Vector File Search
+
+Use explicit roots and an explicit embedding provider.
+
+```ts
+const fileSearch = createCodexProviderRelayFileSearchExecutor({
+  sources: [{
+    type: "local-vector",
+    roots: [workspaceRoot],
+    embeddingProvider: createCodexProviderRelayEmbeddingsApiProvider({
+      apiKey: process.env.EMBEDDINGS_API_KEY,
+      endpoint: process.env.EMBEDDINGS_API_ENDPOINT,
+      model: process.env.EMBEDDINGS_MODEL,
+    }),
+  }],
+});
+```
+
+The package does not scan the process working directory implicitly. Hosts must decide which roots are safe.
+
+## Unsafe Tool Policy
+
+`code_interpreter`, `computer`, shell-like tools, and any real environment-control surface require a host-owned executor and safety policy. The relay package only defines contracts and output normalization.
+
+## Standalone Server Env
+
+Use the new prefix for new deployments:
+
+```bash
+CODEX_PROVIDER_RELAY_CAPABILITY_PRESET=openrouter
+CODEX_PROVIDER_RELAY_API_KEY=...
+CODEX_PROVIDER_RELAY_MODEL=deepseek/deepseek-chat
+CODEX_PROVIDER_RELAY_TRACE=stderr-json
+codex-provider-relay-server
+```
+
+Legacy `CODEX_GATEWAY_*` variables remain supported for compatibility.

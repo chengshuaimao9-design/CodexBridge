@@ -88,15 +88,24 @@ export {
   reserveLocalPort,
 } from './server/responses_adapter_server.js';
 export type {
+  CodexProviderRelayTraceEvent,
+  CodexProviderRelayTraceSink,
   CodexGatewayTraceEvent,
   CodexGatewayTraceSink,
   OpenAICompatibleResponsesAdapterServerOptions,
 } from './server/responses_adapter_server.js';
 export {
+  createCodexProviderRelayStandaloneServerConfigFromEnv,
+  createCodexProviderRelayStandaloneServerFromEnv,
   createCodexGatewayStandaloneServerConfigFromEnv,
   createCodexGatewayStandaloneServerFromEnv,
+  loadCodexProviderRelayStandaloneEnvFile,
   loadCodexGatewayStandaloneEnvFile,
+  resolveCodexProviderRelayStandaloneServerEnv,
   resolveCodexGatewayStandaloneServerEnv,
 } from './server/standalone_server.js';
-export type { CodexGatewayStandaloneServerConfig } from './server/standalone_server.js';
+export type {
+  CodexProviderRelayStandaloneServerConfig,
+  CodexGatewayStandaloneServerConfig,
+} from './server/standalone_server.js';
 export type * from './types.js';

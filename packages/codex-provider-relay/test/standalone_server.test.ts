@@ -4,19 +4,23 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
+  createCodexProviderRelayStandaloneServerConfigFromEnv,
+  createCodexProviderRelayStandaloneServerFromEnv,
   createCodexGatewayStandaloneServerConfigFromEnv,
   createCodexGatewayStandaloneServerFromEnv,
+  loadCodexProviderRelayStandaloneEnvFile,
   loadCodexGatewayStandaloneEnvFile,
+  resolveCodexProviderRelayStandaloneServerEnv,
   resolveCodexGatewayStandaloneServerEnv,
 } from '../src/index.js';
 
 test('standalone server config resolves preset aliases and capability overrides from env', () => {
-  const config = createCodexGatewayStandaloneServerConfigFromEnv({
-    CODEX_GATEWAY_CAPABILITY_PRESET: 'qwen',
+  const config = createCodexProviderRelayStandaloneServerConfigFromEnv({
+    CODEX_PROVIDER_RELAY_CAPABILITY_PRESET: 'qwen',
     DASHSCOPE_API_KEY: 'dashscope-key',
     DASHSCOPE_BASE_URL: 'https://dashscope-us.aliyuncs.com/compatible-mode/v1',
     DASHSCOPE_MODEL: 'qwen-plus-latest',
-    CODEX_GATEWAY_CAPABILITY_OVERRIDES_JSON: JSON.stringify({
+    CODEX_PROVIDER_RELAY_CAPABILITY_OVERRIDES_JSON: JSON.stringify({
       supportsBuiltinWebSearchTool: true,
     }),
   });
@@ -31,11 +35,11 @@ test('standalone server config resolves preset aliases and capability overrides 
 });
 
 test('standalone server config loads inline external model catalogs from env JSON', async () => {
-  const { config, server } = createCodexGatewayStandaloneServerFromEnv({
-    CODEX_GATEWAY_CAPABILITY_PRESET: 'openrouter',
+  const { config, server } = createCodexProviderRelayStandaloneServerFromEnv({
+    CODEX_PROVIDER_RELAY_CAPABILITY_PRESET: 'openrouter',
     OPENROUTER_API_KEY: 'openrouter-key',
-    CODEX_GATEWAY_MODEL: 'openai/gpt-4.1-mini',
-    CODEX_GATEWAY_MODEL_CATALOG_JSON: JSON.stringify({
+    CODEX_PROVIDER_RELAY_MODEL: 'openai/gpt-4.1-mini',
+    CODEX_PROVIDER_RELAY_MODEL_CATALOG_JSON: JSON.stringify({
       openrouter: [{
         id: 'openai/gpt-4.1-mini',
         display_name: 'OpenAI GPT-4.1 Mini',
@@ -62,10 +66,10 @@ test('standalone server config loads inline external model catalogs from env JSO
 
 test('standalone server config rejects empty external model catalogs', () => {
   assert.throws(
-    () => createCodexGatewayStandaloneServerConfigFromEnv({
-      CODEX_GATEWAY_CAPABILITY_PRESET: 'openrouter',
+    () => createCodexProviderRelayStandaloneServerConfigFromEnv({
+      CODEX_PROVIDER_RELAY_CAPABILITY_PRESET: 'openrouter',
       OPENROUTER_API_KEY: 'openrouter-key',
-      CODEX_GATEWAY_MODEL_CATALOG_JSON: JSON.stringify({ openrouter: [] }),
+      CODEX_PROVIDER_RELAY_MODEL_CATALOG_JSON: JSON.stringify({ openrouter: [] }),
     }),
     /did not contain any model entries/,
   );
@@ -82,7 +86,7 @@ test('standalone server env file loader parses dotenv-style files and ignores in
     '1BAD=value',
   ].join('\n'));
 
-  const loaded = loadCodexGatewayStandaloneEnvFile(envFilePath);
+  const loaded = loadCodexProviderRelayStandaloneEnvFile(envFilePath);
   assert.equal(loaded.OPENROUTER_API_KEY, 'file-key');
   assert.equal(loaded.CODEX_GATEWAY_MODEL, 'openai/gpt-4.1-mini');
   assert.equal('BAD LINE' in loaded, false);
@@ -97,9 +101,9 @@ test('standalone server env resolution lets explicit env override env-file defau
     'CODEX_GATEWAY_MODEL=openai/gpt-4.1-mini',
   ].join('\n'));
 
-  const resolved = resolveCodexGatewayStandaloneServerEnv({
+  const resolved = resolveCodexProviderRelayStandaloneServerEnv({
     env: {
-      CODEX_GATEWAY_ENV_FILE: envFilePath,
+      CODEX_PROVIDER_RELAY_ENV_FILE: envFilePath,
       OPENROUTER_API_KEY: 'shell-key',
     },
   });
@@ -117,8 +121,8 @@ test('standalone server config loads provider defaults from CODEX_GATEWAY_ENV_FI
     'OPENROUTER_MODEL=openai/gpt-4.1-mini',
   ].join('\n'));
 
-  const config = createCodexGatewayStandaloneServerConfigFromEnv({
-    CODEX_GATEWAY_ENV_FILE: envFilePath,
+  const config = createCodexProviderRelayStandaloneServerConfigFromEnv({
+    CODEX_PROVIDER_RELAY_ENV_FILE: envFilePath,
   });
 
   assert.equal(config.presetId, 'openrouter');
@@ -127,11 +131,35 @@ test('standalone server config loads provider defaults from CODEX_GATEWAY_ENV_FI
 });
 
 test('standalone server config enables stderr-json trace mode from env', () => {
-  const config = createCodexGatewayStandaloneServerConfigFromEnv({
-    CODEX_GATEWAY_CAPABILITY_PRESET: 'openrouter',
+  const config = createCodexProviderRelayStandaloneServerConfigFromEnv({
+    CODEX_PROVIDER_RELAY_CAPABILITY_PRESET: 'openrouter',
     OPENROUTER_API_KEY: 'trace-key',
-    CODEX_GATEWAY_TRACE: 'true',
+    CODEX_PROVIDER_RELAY_TRACE: 'true',
   });
 
   assert.equal(config.traceMode, 'stderr-json');
+});
+
+test('standalone server retains deprecated CodexGateway aliases', () => {
+  const config = createCodexGatewayStandaloneServerConfigFromEnv({
+    CODEX_GATEWAY_CAPABILITY_PRESET: 'openrouter',
+    OPENROUTER_API_KEY: 'legacy-key',
+  });
+  assert.equal(config.presetId, 'openrouter');
+
+  const resolved = resolveCodexGatewayStandaloneServerEnv({
+    env: { CODEX_GATEWAY_MODEL: 'legacy-model' },
+  });
+  assert.equal(resolved.CODEX_GATEWAY_MODEL, 'legacy-model');
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-gateway-alias-env-'));
+  const envFilePath = path.join(tempDir, 'gateway.env');
+  fs.writeFileSync(envFilePath, 'OPENROUTER_API_KEY=legacy-file-key\n');
+  assert.equal(loadCodexGatewayStandaloneEnvFile(envFilePath).OPENROUTER_API_KEY, 'legacy-file-key');
+
+  const { server } = createCodexGatewayStandaloneServerFromEnv({
+    CODEX_GATEWAY_CAPABILITY_PRESET: 'openrouter',
+    OPENROUTER_API_KEY: 'legacy-key',
+  });
+  assert.equal(typeof server.start, 'function');
 });

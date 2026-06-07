@@ -69,3 +69,9 @@ The next implementation phase is splitting the low-level adapter converter into 
 See [docs/TARGET.md](docs/TARGET.md) for the locked target and phased migration plan.
 
 See [docs/CODEX_PLUS_PLUS_CONVERSION_PORTING.md](docs/CODEX_PLUS_PLUS_CONVERSION_PORTING.md) for the detailed Codex++ protocol conversion porting checklist.
+
+See [docs/OPENAI_BUILTIN_TOOL_COMPATIBILITY.md](docs/OPENAI_BUILTIN_TOOL_COMPATIBILITY.md) for hosted tool parity status.
+
+See [docs/RECIPES.md](docs/RECIPES.md) and [examples](examples) for host-neutral integration examples.
+
+See [docs/INDEPENDENT_PACKAGE_CHECKLIST.md](docs/INDEPENDENT_PACKAGE_CHECKLIST.md) for the remaining package readiness gates before `private: true` can be removed.

@@ -4,11 +4,15 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   assessCodexGatewayProtocolBoundary,
+  createCodexProviderRelayStandaloneServerConfigFromEnv,
+  createCodexProviderRelayStandaloneServerFromEnv,
   CODEX_PROVIDER_RELAY_DOES_NOT_OWN,
   CODEX_PROVIDER_RELAY_OWNS,
   CODEX_PROVIDER_RELAY_PACKAGE_NAME,
   CODEX_PROVIDER_RELAY_PACKAGE_PHASE,
   CODEX_PROVIDER_RELAY_RELEASE_CHANNEL,
+  loadCodexProviderRelayStandaloneEnvFile,
+  resolveCodexProviderRelayStandaloneServerEnv,
 } from '../src/index.js';
 
 test('codex provider relay package exposes the unified relay boundary contract', () => {
@@ -37,7 +41,7 @@ test('codex provider relay package metadata stays internal-only while the bounda
   assert.deepEqual(Object.keys(packageJson.exports ?? {}).sort(), ['.', './package.json']);
   assert.equal(packageJson.bin?.['codex-provider-relay-server'], './dist/cli.js');
   assert.equal(packageJson.bin?.['codex-gateway-server'], './dist/cli.js');
-  assert.deepEqual(packageJson.files, ['dist', 'README.md', 'docs']);
+  assert.deepEqual(packageJson.files, ['dist', 'README.md', 'docs', 'examples']);
 });
 
 test('codex provider relay package metadata and build layout stay aligned', () => {
@@ -58,7 +62,7 @@ test('codex provider relay package metadata and build layout stay aligned', () =
   assert.equal((packageJson.exports?.['.'] as { default?: string })?.default, './dist/index.js');
   assert.equal(packageJson.bin?.['codex-provider-relay-server'], './dist/cli.js');
   assert.equal(packageJson.bin?.['codex-gateway-server'], './dist/cli.js');
-  assert.deepEqual(packageJson.files, ['dist', 'README.md', 'docs']);
+  assert.deepEqual(packageJson.files, ['dist', 'README.md', 'docs', 'examples']);
 });
 
 test('codex provider relay root entrypoint exports profile and protocol surfaces', () => {
@@ -74,4 +78,33 @@ test('codex provider relay root entrypoint exports profile and protocol surfaces
   assert.match(source, /export \{\s*[\s\S]*getOpenAICompatibleProviderPreset/);
   assert.match(source, /export type \{\s*[\s\S]*OpenAICompatibleProviderCapabilities/);
   assert.match(source, /export \{\s*[\s\S]*OpenAICompatibleResponsesAdapterServer/);
+  assert.match(source, /CodexProviderRelayTraceEvent/);
+  assert.match(source, /createCodexProviderRelayStandaloneServerConfigFromEnv/);
+  assert.match(source, /createCodexProviderRelayStandaloneServerFromEnv/);
+  assert.match(source, /loadCodexProviderRelayStandaloneEnvFile/);
+  assert.match(source, /resolveCodexProviderRelayStandaloneServerEnv/);
+
+  assert.equal(typeof createCodexProviderRelayStandaloneServerConfigFromEnv, 'function');
+  assert.equal(typeof createCodexProviderRelayStandaloneServerFromEnv, 'function');
+  assert.equal(typeof loadCodexProviderRelayStandaloneEnvFile, 'function');
+  assert.equal(typeof resolveCodexProviderRelayStandaloneServerEnv, 'function');
+});
+
+test('codex provider relay package includes public examples and package readiness docs', () => {
+  const packageRoot = path.resolve(import.meta.dirname, '..');
+  const requiredFiles = [
+    'docs/OPENAI_BUILTIN_TOOL_COMPATIBILITY.md',
+    'docs/INDEPENDENT_PACKAGE_CHECKLIST.md',
+    'docs/RECIPES.md',
+    'examples/mixed-openrouter-runtime.ts',
+    'examples/relay-emulated-web-search.ts',
+    'examples/relay-emulated-file-search-local-vector.ts',
+    'examples/relay-emulated-image-generation.ts',
+    'examples/relay-emulated-code-interpreter-custom-executor.ts',
+    'examples/codexnext-integration.ts',
+  ];
+
+  for (const relativePath of requiredFiles) {
+    assert.equal(fs.existsSync(path.join(packageRoot, relativePath)), true, `${relativePath} should exist`);
+  }
 });

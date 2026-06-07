@@ -65,7 +65,7 @@ type GatewayRetryHint =
   | 'fix_request'
   | 'retry_or_inspect_upstream';
 
-type CodexGatewayRequestAdjustment =
+type CodexProviderRelayRequestAdjustment =
   | {
     kind: 'field_filtered' | 'tool_choice_dropped' | 'model_overridden';
     path: string;
@@ -89,7 +89,7 @@ type CodexGatewayRequestAdjustment =
     after: number;
   };
 
-export type CodexGatewayTraceEvent =
+export type CodexProviderRelayTraceEvent =
   | {
     type: 'request.received';
     route: AdapterRoute;
@@ -110,7 +110,7 @@ export type CodexGatewayTraceEvent =
     route: 'responses';
     model: string;
     stream: boolean;
-    adjustments: CodexGatewayRequestAdjustment[];
+    adjustments: CodexProviderRelayRequestAdjustment[];
   }
   | {
     type: 'response.translated';
@@ -160,7 +160,17 @@ export type CodexGatewayTraceEvent =
     iteration: number;
   };
 
-export type CodexGatewayTraceSink = (event: CodexGatewayTraceEvent) => void;
+export type CodexProviderRelayTraceSink = (event: CodexProviderRelayTraceEvent) => void;
+
+/**
+ * @deprecated Use CodexProviderRelayTraceEvent.
+ */
+export type CodexGatewayTraceEvent = CodexProviderRelayTraceEvent;
+
+/**
+ * @deprecated Use CodexProviderRelayTraceSink.
+ */
+export type CodexGatewayTraceSink = CodexProviderRelayTraceSink;
 
 export interface OpenAICompatibleResponsesAdapterServerOptions {
   apiKey: string;
@@ -176,7 +186,7 @@ export interface OpenAICompatibleResponsesAdapterServerOptions {
   upstreamResponsesPath?: string | null;
   upstreamChatCompletionsPath?: string | null;
   ownedBy?: string | null;
-  traceSink?: CodexGatewayTraceSink | null;
+  traceSink?: CodexProviderRelayTraceSink | null;
   hostedTools?: CodexProviderRelayHostedToolDeclaration[] | null;
   hostedToolExecutors?: CodexProviderRelayHostedToolExecutorRegistryInput;
   maxHostedToolIterations?: number | null;
@@ -216,7 +226,7 @@ export class OpenAICompatibleResponsesAdapterServer {
 
   private readonly ownedBy: string;
 
-  private readonly traceSink: CodexGatewayTraceSink | null;
+  private readonly traceSink: CodexProviderRelayTraceSink | null;
 
   private readonly hostedTools: NormalizedCodexProviderRelayHostedToolDeclaration[];
 
@@ -1311,7 +1321,7 @@ export class OpenAICompatibleResponsesAdapterServer {
     response.end();
   }
 
-  private emitTrace(event: CodexGatewayTraceEvent): void {
+  private emitTrace(event: CodexProviderRelayTraceEvent): void {
     if (!this.traceSink) {
       return;
     }
@@ -2545,8 +2555,8 @@ function summarizeRequestAdjustments({
   upstreamRequest: JsonRecord;
   providerCapabilities: OpenAICompatibleProviderCapabilities | null;
   hostedTools?: NormalizedCodexProviderRelayHostedToolDeclaration[];
-}): CodexGatewayRequestAdjustment[] {
-  const adjustments: CodexGatewayRequestAdjustment[] = [];
+}): CodexProviderRelayRequestAdjustment[] {
+  const adjustments: CodexProviderRelayRequestAdjustment[] = [];
   const requestedModel = normalizeString(request?.model);
   const upstreamModel = normalizeString(upstreamRequest?.model);
   if (requestedModel && upstreamModel && requestedModel !== upstreamModel) {

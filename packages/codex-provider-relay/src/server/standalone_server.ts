@@ -12,34 +12,40 @@ import {
   type OpenAICompatibleProviderCapabilities,
 } from '../capabilities/thinking_policy.js';
 import {
-  type CodexGatewayTraceSink,
+  type CodexProviderRelayTraceSink,
   OpenAICompatibleResponsesAdapterServer,
   type OpenAICompatibleResponsesAdapterServerOptions,
 } from './responses_adapter_server.js';
 
 type EnvRecord = Record<string, string | undefined>;
 
-export interface CodexGatewayStandaloneServerConfig extends OpenAICompatibleResponsesAdapterServerOptions {
+export interface CodexProviderRelayStandaloneServerConfig extends OpenAICompatibleResponsesAdapterServerOptions {
   presetId: OpenAICompatibleCapabilityPresetId;
   modelCatalogSource: 'preset' | 'json' | 'path';
   traceMode: 'off' | 'stderr-json';
 }
 
-export function createCodexGatewayStandaloneServerConfigFromEnv(
+/**
+ * @deprecated Use CodexProviderRelayStandaloneServerConfig.
+ */
+export type CodexGatewayStandaloneServerConfig = CodexProviderRelayStandaloneServerConfig;
+
+export function createCodexProviderRelayStandaloneServerConfigFromEnv(
   env: EnvRecord = process.env,
-): CodexGatewayStandaloneServerConfig {
-  const resolvedEnv = resolveCodexGatewayStandaloneServerEnv({ env });
-  const preset = getOpenAICompatibleProviderPreset(normalizeString(resolvedEnv.CODEX_GATEWAY_CAPABILITY_PRESET) || 'default');
+): CodexProviderRelayStandaloneServerConfig {
+  const resolvedEnv = resolveCodexProviderRelayStandaloneServerEnv({ env });
+  const preset = getOpenAICompatibleProviderPreset(resolveStandaloneEnvValue(resolvedEnv, 'CAPABILITY_PRESET') || 'default');
   const registration = OPENAI_COMPATIBLE_PROFILE_PRESET_REGISTRATIONS.find((entry) => entry.presetId === preset.id) ?? null;
 
   const apiKey = resolveConfiguredValue(resolvedEnv, [
+    relayEnvKey('API_KEY'),
     'CODEX_GATEWAY_API_KEY',
     preset.apiKeyEnv,
     registration?.alternativeApiKeyEnv,
   ]);
   if (!apiKey) {
     throw new Error(
-      `Codex Gateway standalone server requires an API key. Set CODEX_GATEWAY_API_KEY or ${[
+      `Codex Provider Relay standalone server requires an API key. Set ${relayEnvKey('API_KEY')} / CODEX_GATEWAY_API_KEY or ${[
         preset.apiKeyEnv,
         registration?.alternativeApiKeyEnv,
       ].filter(Boolean).join(' / ')}.`,
@@ -47,29 +53,31 @@ export function createCodexGatewayStandaloneServerConfigFromEnv(
   }
 
   const upstreamBaseUrl = resolveConfiguredValue(resolvedEnv, [
+    relayEnvKey('BASE_URL'),
     'CODEX_GATEWAY_BASE_URL',
     registration ? `${registration.envPrefix}_BASE_URL` : null,
     registration?.alternativeBaseUrlEnv,
   ]) || preset.baseUrl;
 
   const defaultModel = resolveConfiguredValue(resolvedEnv, [
+    relayEnvKey('MODEL'),
     'CODEX_GATEWAY_MODEL',
     registration ? `${registration.envPrefix}_MODEL` : null,
     registration?.alternativeModelEnv,
   ]) || preset.defaultModel;
 
-  const providerName = normalizeString(resolvedEnv.CODEX_GATEWAY_PROVIDER_NAME) || preset.displayName;
-  const providerKind = normalizeString(resolvedEnv.CODEX_GATEWAY_PROVIDER_KIND) || 'openai-compatible';
-  const ownedBy = normalizeString(resolvedEnv.CODEX_GATEWAY_OWNED_BY) || preset.ownedBy;
-  const host = normalizeString(resolvedEnv.CODEX_GATEWAY_HOST) || '127.0.0.1';
-  const port = normalizePort(resolvedEnv.CODEX_GATEWAY_PORT);
-  const upstreamChatCompletionsPath = normalizeString(resolvedEnv.CODEX_GATEWAY_UPSTREAM_CHAT_PATH)
+  const providerName = resolveStandaloneEnvValue(resolvedEnv, 'PROVIDER_NAME') || preset.displayName;
+  const providerKind = resolveStandaloneEnvValue(resolvedEnv, 'PROVIDER_KIND') || 'openai-compatible';
+  const ownedBy = resolveStandaloneEnvValue(resolvedEnv, 'OWNED_BY') || preset.ownedBy;
+  const host = resolveStandaloneEnvValue(resolvedEnv, 'HOST') || '127.0.0.1';
+  const port = normalizePort(resolveStandaloneEnvValue(resolvedEnv, 'PORT'));
+  const upstreamChatCompletionsPath = resolveStandaloneEnvValue(resolvedEnv, 'UPSTREAM_CHAT_PATH')
     || preset.upstreamChatCompletionsPath;
   const traceMode = resolveStandaloneTraceMode(resolvedEnv);
 
   const capabilityOverrides = parseOptionalJson(
-    resolvedEnv.CODEX_GATEWAY_CAPABILITY_OVERRIDES_JSON,
-    'CODEX_GATEWAY_CAPABILITY_OVERRIDES_JSON',
+    resolveStandaloneEnvValue(resolvedEnv, 'CAPABILITY_OVERRIDES_JSON'),
+    `${relayEnvKey('CAPABILITY_OVERRIDES_JSON')} / CODEX_GATEWAY_CAPABILITY_OVERRIDES_JSON`,
   );
   let providerCapabilities = mergeOpenAICompatibleProviderCapabilities(
     preset.capabilities,
@@ -77,16 +85,16 @@ export function createCodexGatewayStandaloneServerConfigFromEnv(
   );
 
   const inlineModelCatalog = parseOptionalJson(
-    resolvedEnv.CODEX_GATEWAY_MODEL_CATALOG_JSON,
-    'CODEX_GATEWAY_MODEL_CATALOG_JSON',
+    resolveStandaloneEnvValue(resolvedEnv, 'MODEL_CATALOG_JSON'),
+    `${relayEnvKey('MODEL_CATALOG_JSON')} / CODEX_GATEWAY_MODEL_CATALOG_JSON`,
   );
-  const modelCatalogPath = normalizeString(resolvedEnv.CODEX_GATEWAY_MODEL_CATALOG_PATH);
+  const modelCatalogPath = resolveStandaloneEnvValue(resolvedEnv, 'MODEL_CATALOG_PATH');
   const modelCatalogFromPath = modelCatalogPath
-    ? parseJsonFile(modelCatalogPath, 'CODEX_GATEWAY_MODEL_CATALOG_PATH')
+    ? parseJsonFile(modelCatalogPath, `${relayEnvKey('MODEL_CATALOG_PATH')} / CODEX_GATEWAY_MODEL_CATALOG_PATH`)
     : undefined;
   const modelCatalogRaw = inlineModelCatalog !== undefined ? inlineModelCatalog : modelCatalogFromPath;
 
-  let modelCatalogSource: CodexGatewayStandaloneServerConfig['modelCatalogSource'] = 'preset';
+  let modelCatalogSource: CodexProviderRelayStandaloneServerConfig['modelCatalogSource'] = 'preset';
   let models = buildOpenAICompatibleModelCatalog({
     defaultModel,
     modelIds: preset.modelIds,
@@ -104,9 +112,9 @@ export function createCodexGatewayStandaloneServerConfigFromEnv(
     });
     if (externalCatalog.catalog.length === 0) {
       throw new Error(
-        `Codex Gateway standalone server received ${modelCatalogSource === 'json'
-          ? 'CODEX_GATEWAY_MODEL_CATALOG_JSON'
-          : 'CODEX_GATEWAY_MODEL_CATALOG_PATH'} but it did not contain any model entries.`,
+        `Codex Provider Relay standalone server received ${modelCatalogSource === 'json'
+          ? `${relayEnvKey('MODEL_CATALOG_JSON')} / CODEX_GATEWAY_MODEL_CATALOG_JSON`
+          : `${relayEnvKey('MODEL_CATALOG_PATH')} / CODEX_GATEWAY_MODEL_CATALOG_PATH`} but it did not contain any model entries.`,
       );
     }
     providerCapabilities = externalCatalog.capabilities;
@@ -132,6 +140,15 @@ export function createCodexGatewayStandaloneServerConfigFromEnv(
 }
 
 export function resolveCodexGatewayStandaloneServerEnv(
+  options: {
+    env?: EnvRecord;
+    envFilePath?: string | null;
+  } = {},
+): EnvRecord {
+  return resolveCodexProviderRelayStandaloneServerEnv(options);
+}
+
+export function resolveCodexProviderRelayStandaloneServerEnv(
   {
     env = process.env,
     envFilePath = null,
@@ -140,36 +157,66 @@ export function resolveCodexGatewayStandaloneServerEnv(
     envFilePath?: string | null;
   } = {},
 ): EnvRecord {
-  const resolvedPath = normalizeString(envFilePath) || normalizeString(env.CODEX_GATEWAY_ENV_FILE);
+  const resolvedPath = normalizeString(envFilePath)
+    || normalizeString(env.CODEX_PROVIDER_RELAY_ENV_FILE)
+    || normalizeString(env.CODEX_GATEWAY_ENV_FILE);
   if (!resolvedPath) {
     return { ...env };
   }
   return {
-    ...loadCodexGatewayStandaloneEnvFile(resolvedPath),
+    ...loadCodexProviderRelayStandaloneEnvFile(resolvedPath),
     ...env,
   };
 }
 
+/**
+ * @deprecated Use loadCodexProviderRelayStandaloneEnvFile.
+ */
 export function loadCodexGatewayStandaloneEnvFile(filePath: string): Record<string, string> {
+  return loadCodexProviderRelayStandaloneEnvFile(filePath);
+}
+
+export function loadCodexProviderRelayStandaloneEnvFile(filePath: string): Record<string, string> {
   const resolvedPath = normalizeString(filePath);
   if (!resolvedPath) {
-    throw new Error('Codex Gateway standalone server env file path must not be empty.');
+    throw new Error('Codex Provider Relay standalone server env file path must not be empty.');
   }
   try {
     const content = fs.readFileSync(resolvedPath, 'utf8');
     return parseDotenvLikeContent(content);
   } catch (error) {
-    throw new Error(`Codex Gateway standalone server env file could not be loaded from ${resolvedPath}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Codex Provider Relay standalone server env file could not be loaded from ${resolvedPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
+/**
+ * @deprecated Use createCodexProviderRelayStandaloneServerConfigFromEnv.
+ */
+export function createCodexGatewayStandaloneServerConfigFromEnv(
+  env: EnvRecord = process.env,
+): CodexProviderRelayStandaloneServerConfig {
+  return createCodexProviderRelayStandaloneServerConfigFromEnv(env);
+}
+
+/**
+ * @deprecated Use createCodexProviderRelayStandaloneServerFromEnv.
+ */
 export function createCodexGatewayStandaloneServerFromEnv(
   env: EnvRecord = process.env,
 ): {
-  config: CodexGatewayStandaloneServerConfig;
+  config: CodexProviderRelayStandaloneServerConfig;
   server: OpenAICompatibleResponsesAdapterServer;
 } {
-  const config = createCodexGatewayStandaloneServerConfigFromEnv(env);
+  return createCodexProviderRelayStandaloneServerFromEnv(env);
+}
+
+export function createCodexProviderRelayStandaloneServerFromEnv(
+  env: EnvRecord = process.env,
+): {
+  config: CodexProviderRelayStandaloneServerConfig;
+  server: OpenAICompatibleResponsesAdapterServer;
+} {
+  const config = createCodexProviderRelayStandaloneServerConfigFromEnv(env);
   return {
     config,
     server: new OpenAICompatibleResponsesAdapterServer({
@@ -179,25 +226,36 @@ export function createCodexGatewayStandaloneServerFromEnv(
   };
 }
 
-function resolveStandaloneTraceMode(env: EnvRecord): CodexGatewayStandaloneServerConfig['traceMode'] {
-  const normalized = normalizeString(env.CODEX_GATEWAY_TRACE).toLowerCase();
+function resolveStandaloneTraceMode(env: EnvRecord): CodexProviderRelayStandaloneServerConfig['traceMode'] {
+  const normalized = resolveStandaloneEnvValue(env, 'TRACE').toLowerCase();
   return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'stderr-json'
     ? 'stderr-json'
     : 'off';
 }
 
 function createStandaloneTraceSink(
-  traceMode: CodexGatewayStandaloneServerConfig['traceMode'],
-): CodexGatewayTraceSink | null {
+  traceMode: CodexProviderRelayStandaloneServerConfig['traceMode'],
+): CodexProviderRelayTraceSink | null {
   if (traceMode !== 'stderr-json') {
     return null;
   }
   return (event) => {
     process.stderr.write(`${JSON.stringify({
-      source: 'codex-gateway-trace',
+      source: 'codex-provider-relay-trace',
       ...event,
     })}\n`);
   };
+}
+
+function resolveStandaloneEnvValue(env: EnvRecord, suffix: string): string {
+  return resolveConfiguredValue(env, [
+    relayEnvKey(suffix),
+    `CODEX_GATEWAY_${suffix}`,
+  ]);
+}
+
+function relayEnvKey(suffix: string): string {
+  return `CODEX_PROVIDER_RELAY_${suffix}`;
 }
 
 function resolveConfiguredValue(env: EnvRecord, keys: Array<string | null | undefined>): string {
@@ -240,7 +298,7 @@ function normalizePort(value: string | undefined): number {
   }
   const port = Number.parseInt(normalized, 10);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
-    throw new Error(`CODEX_GATEWAY_PORT must be an integer between 0 and 65535. Received: ${normalized}`);
+    throw new Error(`${relayEnvKey('PORT')} / CODEX_GATEWAY_PORT must be an integer between 0 and 65535. Received: ${normalized}`);
   }
   return port;
 }

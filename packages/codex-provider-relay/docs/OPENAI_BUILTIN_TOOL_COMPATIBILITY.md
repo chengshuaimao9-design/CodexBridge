@@ -137,3 +137,16 @@ The next phase should keep moving heavy or unsafe tools behind explicit executor
 - No CodexBridge/CodexNext session or UI logic.
 - No shell/computer/code execution default.
 - No package publishing switch; `private: true` stays until package readiness is complete.
+
+## Package Independence Status
+
+- Done: formal `CodexProviderRelayTraceEvent` and `CodexProviderRelayTraceSink` names are exported.
+- Done: formal standalone server helpers are exported:
+  - `createCodexProviderRelayStandaloneServerConfigFromEnv`
+  - `createCodexProviderRelayStandaloneServerFromEnv`
+  - `loadCodexProviderRelayStandaloneEnvFile`
+  - `resolveCodexProviderRelayStandaloneServerEnv`
+- Done: deprecated `CodexGateway*` aliases remain available for old consumers.
+- Done: new standalone deployments can use `CODEX_PROVIDER_RELAY_*` environment variables.
+- Done: host-neutral examples and recipes exist under `examples/` and `docs/RECIPES.md`.
+- Remaining: live smoke docs, package versioning, release workflow, and external publishing policy.

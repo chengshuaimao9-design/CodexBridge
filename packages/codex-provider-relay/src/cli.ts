@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import {
-  createCodexGatewayStandaloneServerFromEnv,
-  resolveCodexGatewayStandaloneServerEnv,
+  createCodexProviderRelayStandaloneServerFromEnv,
+  resolveCodexProviderRelayStandaloneServerEnv,
 } from './server/standalone_server.js';
 
 async function main(): Promise<void> {
@@ -12,14 +12,14 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const env = resolveCodexGatewayStandaloneServerEnv({
+  const env = resolveCodexProviderRelayStandaloneServerEnv({
     env: {
       ...process.env,
-      ...(args.trace ? { CODEX_GATEWAY_TRACE: '1' } : {}),
+      ...(args.trace ? { CODEX_PROVIDER_RELAY_TRACE: '1' } : {}),
     },
     envFilePath: args.envFilePath,
   });
-  const { config, server } = createCodexGatewayStandaloneServerFromEnv(env);
+  const { config, server } = createCodexProviderRelayStandaloneServerFromEnv(env);
   await server.start();
 
   console.log('Codex Provider Relay standalone server started.');
@@ -30,8 +30,8 @@ async function main(): Promise<void> {
   console.log(`Local base URL: ${server.baseUrl}`);
   console.log(`Model catalog source: ${config.modelCatalogSource}`);
   console.log(`Trace mode: ${config.traceMode}`);
-  if (args.envFilePath || env.CODEX_GATEWAY_ENV_FILE) {
-    console.log(`Env file: ${args.envFilePath ?? env.CODEX_GATEWAY_ENV_FILE}`);
+  if (args.envFilePath || env.CODEX_PROVIDER_RELAY_ENV_FILE || env.CODEX_GATEWAY_ENV_FILE) {
+    console.log(`Env file: ${args.envFilePath ?? env.CODEX_PROVIDER_RELAY_ENV_FILE ?? env.CODEX_GATEWAY_ENV_FILE}`);
   }
   console.log('Routes: GET /models (alias /v1/models), POST /responses (alias /v1/responses), POST /responses/compact (alias /v1/responses/compact)');
   console.log('Press Ctrl+C to stop.');

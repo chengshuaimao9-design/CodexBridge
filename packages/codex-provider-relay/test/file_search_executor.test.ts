@@ -745,6 +745,91 @@ test('local-vector file_search source chunks files and reuses cached embeddings'
   assert.equal(deltas.some((entry) => entry.delta === 'local vector stale documents removed'), true);
 });
 
+test('local-vector file_search rejects path_glob outside configured roots', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-provider-relay-local-vector-path-glob-'));
+  await fs.mkdir(path.join(root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(root, 'docs', 'invoice.md'), 'invoice payment target');
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayLocalVectorFileSearchSource({
+        name: 'path-glob-vector',
+        roots: [root],
+        embeddingProvider: createKeywordEmbeddingProvider(['invoice', 'payment']),
+      }),
+    ],
+  });
+
+  await assert.rejects(
+    executor(baseRequest({
+      query: 'invoice payment',
+      path_glob: '../*',
+    })),
+    /path_glob must stay inside configured roots/u,
+  );
+});
+
+test('local-vector file_search does not follow symlinks by default', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-provider-relay-local-vector-symlink-'));
+  await fs.mkdir(path.join(root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(root, 'real.md'), 'invoice payment symlink target');
+  try {
+    await fs.symlink(path.join(root, 'real.md'), path.join(root, 'docs', 'linked.md'));
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code === 'EPERM' || code === 'EACCES' || code === 'ENOTSUP') {
+      t.skip(`symlink creation is not supported in this environment: ${code}`);
+      return;
+    }
+    throw error;
+  }
+  const { provider, embeddedTexts } = createCountingKeywordEmbeddingProvider(['invoice', 'payment']);
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayLocalVectorFileSearchSource({
+        name: 'symlink-vector',
+        roots: [path.join(root, 'docs')],
+        embeddingProvider: provider,
+      }),
+    ],
+  });
+
+  const result = await executor(baseRequest({
+    query: 'invoice payment',
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.equal(content.data.length, 0);
+  assert.deepEqual(embeddedTexts, ['invoice payment']);
+});
+
+test('local-vector file_search skips files larger than maxBytesPerFile before embedding content', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-provider-relay-local-vector-large-file-'));
+  await fs.mkdir(path.join(root, 'docs'), { recursive: true });
+  const largeContent = 'invoice payment oversized target\n'.repeat(80);
+  await fs.writeFile(path.join(root, 'docs', 'large.md'), largeContent);
+  const { provider, embeddedTexts } = createCountingKeywordEmbeddingProvider(['invoice', 'payment']);
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayLocalVectorFileSearchSource({
+        name: 'large-file-vector',
+        roots: [root],
+        embeddingProvider: provider,
+        maxBytesPerFile: 1_024,
+      }),
+    ],
+    maxBytesPerFile: 1_024,
+  });
+
+  const result = await executor(baseRequest({
+    query: 'invoice payment',
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.ok(Buffer.byteLength(largeContent) > 1_024);
+  assert.equal(content.data.length, 0);
+  assert.deepEqual(embeddedTexts, ['invoice payment']);
+});
+
 test('local-vector cache fingerprint invalidates legacy documents and chunking changes', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-provider-relay-local-vector-fingerprint-'));
   await fs.mkdir(path.join(root, 'docs'), { recursive: true });

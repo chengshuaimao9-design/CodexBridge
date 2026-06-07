@@ -15,6 +15,7 @@ test('builtin tool registry exposes canonical tool definitions', () => {
   assert.equal(CODEX_PROVIDER_RELAY_BUILTIN_TOOL_DEFINITIONS.image_generation.relayEmulatedSupported, true);
   assert.equal(CODEX_PROVIDER_RELAY_BUILTIN_TOOL_DEFINITIONS.code_interpreter.relayEmulatedSupported, true);
   assert.equal(CODEX_PROVIDER_RELAY_BUILTIN_TOOL_DEFINITIONS.code_interpreter.unsafeByDefault, true);
+  assert.equal(CODEX_PROVIDER_RELAY_BUILTIN_TOOL_DEFINITIONS.computer.relayEmulatedSupported, true);
   assert.equal(CODEX_PROVIDER_RELAY_BUILTIN_TOOL_DEFINITIONS.computer.unsafeByDefault, true);
   assert.equal(CODEX_PROVIDER_RELAY_BUILTIN_TOOL_DEFINITIONS.apply_patch.status, 'supported');
 });
@@ -33,7 +34,7 @@ test('builtin tool aliases normalize without enabling unsupported relay tools', 
   assert.equal(isCodexProviderRelayRelayEmulatedBuiltinToolType('tool_search'), true);
   assert.equal(isCodexProviderRelayRelayEmulatedBuiltinToolType('image_generation'), true);
   assert.equal(isCodexProviderRelayRelayEmulatedBuiltinToolType('code_interpreter'), true);
-  assert.equal(isCodexProviderRelayRelayEmulatedBuiltinToolType('computer_use_preview'), false);
+  assert.equal(isCodexProviderRelayRelayEmulatedBuiltinToolType('computer_use_preview'), true);
 });
 
 test('hosted tool declarations normalize legacy aliases to canonical names', () => {

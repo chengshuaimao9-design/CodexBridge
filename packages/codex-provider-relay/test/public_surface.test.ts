@@ -68,6 +68,7 @@ test('codex provider relay root entrypoint exports profile and protocol surfaces
   assert.match(source, /export \* from '\.\/codex_config\.js'/);
   assert.match(source, /export \* from '\.\/builtin-tools\/index\.js'/);
   assert.match(source, /export \* from '\.\/code_interpreter_executor\.js'/);
+  assert.match(source, /export \* from '\.\/computer_executor\.js'/);
   assert.match(source, /export \* from '\.\/image_generation_executor\.js'/);
   assert.match(source, /export \* from '\.\/runtime\.js'/);
   assert.match(source, /export \{\s*[\s\S]*getOpenAICompatibleProviderPreset/);

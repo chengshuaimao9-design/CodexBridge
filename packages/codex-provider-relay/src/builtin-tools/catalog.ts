@@ -1,5 +1,6 @@
 import {
   CODE_INTERPRETER_TOOL_PARAMETERS,
+  COMPUTER_TOOL_PARAMETERS,
   EMPTY_UNSAFE_TOOL_PARAMETERS,
   FILE_SEARCH_TOOL_PARAMETERS,
   IMAGE_GENERATION_TOOL_PARAMETERS,
@@ -109,15 +110,15 @@ export const CODEX_PROVIDER_RELAY_BUILTIN_TOOL_DEFINITIONS: Record<
   computer: {
     name: 'computer',
     openaiToolTypes: ['computer', 'computer_use', 'computer_use_preview'],
-    relayModes: ['provider-native', 'codex-local-first', 'declaration-only'],
-    relayEmulatedSupported: false,
+    relayModes: ['provider-native', 'relay-emulated', 'codex-local-first'],
+    relayEmulatedSupported: true,
     providerNativeSupported: true,
     requiresExecutor: true,
     unsafeByDefault: true,
     defaultRelayToolName: 'relay_computer',
-    description: 'Computer control surface. Unsafe by default and not relay-emulated until a host supplies a sandboxed executor.',
-    parameters: EMPTY_UNSAFE_TOOL_PARAMETERS,
-    status: 'planned',
+    description: 'Control a host-provided computer environment through an explicit sandboxed executor.',
+    parameters: COMPUTER_TOOL_PARAMETERS,
+    status: 'partial',
   },
   code_interpreter: {
     name: 'code_interpreter',

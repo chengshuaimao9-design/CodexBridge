@@ -239,6 +239,59 @@ test('responses conversion does not expose code_interpreter without a relay decl
   assert.equal(chat.tool_choice, undefined);
 });
 
+test('responses conversion exposes relay-emulated computer aliases as a Chat function tool', () => {
+  const chat = responsesRequestToChatCompletions({
+    model: 'example-model',
+    input: 'use computer',
+    tools: [{
+      type: 'computer_use_preview',
+    }],
+    tool_choice: 'computer_use_preview',
+  }, {
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'computer',
+      mode: 'relay-emulated',
+      providerToolName: null,
+      relayToolName: 'relay_computer',
+      description: 'Use an explicit host computer adapter.',
+    }],
+  });
+
+  assert.equal(chat.tools[0].type, 'function');
+  assert.equal(chat.tools[0].function.name, 'relay_computer');
+  assert.equal(chat.tools[0].function.parameters.required[0], 'actions');
+  assert.equal(chat.tools[0].function.parameters.properties.actions.type, 'array');
+  assert.equal(chat.tools[0].function.parameters.properties.display.type, 'object');
+  assert.deepEqual(chat.tool_choice, {
+    type: 'function',
+    function: {
+      name: 'relay_computer',
+    },
+  });
+});
+
+test('responses conversion does not expose computer without a relay declaration', () => {
+  const chat = responsesRequestToChatCompletions({
+    model: 'example-model',
+    input: 'use computer',
+    tools: [{
+      type: 'computer',
+    }],
+    tool_choice: 'computer',
+  }, {
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [],
+  });
+
+  assert.equal(chat.tools, undefined);
+  assert.equal(chat.tool_choice, undefined);
+});
+
 test('chat response conversion is available from the package boundary', () => {
   const response = chatCompletionsResponseToResponses({
     id: 'chatcmpl_test',

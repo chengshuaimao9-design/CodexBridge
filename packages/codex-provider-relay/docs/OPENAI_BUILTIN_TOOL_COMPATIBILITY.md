@@ -34,7 +34,7 @@ Official OpenAI docs checked for this matrix:
 | Skills | Not an OpenAI Responses hosted tool type; Codex-local customization surface. | No package support. Should stay host/Codex-local unless modeled as deferred tool definitions later. | `codex-local-first` | No package executor by default | Not applicable | P2 |
 | Image generation | `image_generation` | Partial. Registry/converter/server loop support relay-emulated `image_generation`; `createCodexProviderRelayImageGenerationExecutor()` exposes a host-supplied provider contract. | `provider-native` / `relay-emulated` | Yes for relay | Partial. Opt-in `image_generation_call` output can be appended; no default image provider is bundled. | P3 done |
 | Code interpreter | `code_interpreter` | Partial. Registry/converter/server loop support relay-emulated `code_interpreter`; `createCodexProviderRelayCodeInterpreterExecutor()` exposes a host-supplied sandbox contract. | `provider-native` / `relay-emulated` | Yes for relay | Partial. stdout/stderr/result/files are returned as tool output; stdout/stderr can stream through hosted tool SSE deltas. No default sandbox is bundled. | P4 done |
-| Computer | Current official guide still documents `computer_use_preview`; handoff target canonical name is `computer`, with legacy aliases. | Partial Codex/Codex++ conversion awareness exists for `computer_use`; hosted declaration canonical `computer` alias is missing. | `codex-local-first` first; future `relay-emulated` only with explicit safe executor | Yes for relay | No. `computer_call` / screenshot loop is not implemented. | P5 |
+| Computer | `computer` canonical name, with `computer_use` and `computer_use_preview` legacy aliases. | Partial. Registry/converter/server loop support relay-emulated `computer`; `createCodexProviderRelayComputerExecutor()` exposes a host-supplied computer adapter contract. | `codex-local-first` first / `provider-native` / `relay-emulated` only with explicit executor | Yes for relay | Partial. actions/display are normalized and screenshot/observations are returned as tool output. No default computer control is bundled. | P5 done |
 | Shell | Codex-local tool surface, not a general OpenAI hosted tool. Existing converter has Codex built-in context handling for `local_shell`. | Partial Codex-local conversion only. No hosted relay shell executor. | `codex-local-first`; future `relay-emulated` should remain unsafe and opt-in only | Yes for relay | Partial for Codex-local custom-tool conversion only | P5 |
 | Local shell | `local_shell` in Codex-local context, not a general public OpenAI hosted tool. | Partial Codex-local conversion only. | `codex-local-first` | No package executor by default | Partial | Keep local-first |
 | Apply patch | Codex custom tool `apply_patch` | Strong Codex++ proxy conversion for structured Chat tool calls and response reconstruction. | `codex-local-first` | Codex executes; package only translates/proxies | Strong for current Codex custom-tool bridge | Keep |
@@ -47,6 +47,7 @@ Current public package surface already exports:
 - `createCodexProviderRelayFileSearchExecutor`
 - `createCodexProviderRelayToolSearchExecutor`
 - `createCodexProviderRelayCodeInterpreterExecutor`
+- `createCodexProviderRelayComputerExecutor`
 - `createCodexProviderRelayImageGenerationExecutor`
 - `createCodexProviderRelayOpenAICompatibleImageGenerationProvider`
 - hosted tool declarations and executor registry
@@ -124,7 +125,7 @@ The next phase should keep moving heavy or unsafe tools behind explicit executor
 
 - Done for `image_generation`: executor contract and optional OpenAI-compatible image provider factory exist, but no provider is enabled by default.
 - Done for `code_interpreter`: executor contract exists and supports stdout/stderr hosted tool deltas, but no sandbox is enabled by default.
-- Add executor contracts before implementation for `computer`.
+- Done for `computer`: executor contract exists and supports actions/display plus screenshot/observation output, but no computer-control adapter is enabled by default.
 - Do not provide default executors for unsafe or environment-controlling tools.
 - Require host-owned sandbox, approval, and safety policy.
 

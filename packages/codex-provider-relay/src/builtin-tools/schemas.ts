@@ -159,6 +159,62 @@ export const CODE_INTERPRETER_TOOL_PARAMETERS: JsonRecord = {
   additionalProperties: true,
 };
 
+export const COMPUTER_TOOL_PARAMETERS: JsonRecord = {
+  type: 'object',
+  properties: {
+    actions: {
+      type: 'array',
+      description: 'Computer actions to execute through the explicitly configured host adapter.',
+      items: {
+        type: 'object',
+        properties: {
+          type: {
+            type: 'string',
+            enum: ['click', 'double_click', 'scroll', 'type', 'wait', 'keypress', 'drag', 'move', 'screenshot'],
+          },
+          x: { type: 'number' },
+          y: { type: 'number' },
+          button: { type: 'string' },
+          scroll_x: { type: 'number' },
+          scroll_y: { type: 'number' },
+          text: { type: 'string' },
+          ms: { type: 'integer', minimum: 0 },
+          keys: {
+            type: 'array',
+            items: { type: 'string' },
+          },
+          path: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                x: { type: 'number' },
+                y: { type: 'number' },
+              },
+              required: ['x', 'y'],
+              additionalProperties: true,
+            },
+          },
+        },
+        required: ['type'],
+        additionalProperties: true,
+      },
+    },
+    display: {
+      type: 'object',
+      description: 'Optional display metadata for the host-controlled computer environment.',
+      properties: {
+        width: { type: 'number' },
+        height: { type: 'number' },
+        environment: { type: 'string' },
+      },
+      additionalProperties: true,
+    },
+  },
+  required: ['actions'],
+  additionalProperties: true,
+};
+
 export const EMPTY_UNSAFE_TOOL_PARAMETERS: JsonRecord = {
   type: 'object',
   properties: {},

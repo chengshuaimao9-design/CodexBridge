@@ -4,6 +4,7 @@ import {
   buildOpenAICompatibleChatCompletionsUrl,
   buildOpenAICompatibleModelsUrl,
   createCodexProviderRelayCodeInterpreterExecutor,
+  createCodexProviderRelayComputerExecutor,
   isOpenAICompatibleChatCompletionsProxyPath,
   isOpenAICompatibleModelsProxyPath,
   isOpenAICompatibleResponsesProxyPath,
@@ -1444,6 +1445,186 @@ test('adapter server does not expose relay-emulated code_interpreter without an 
     assert.equal(response.status, 200);
     assert.equal(upstreamRequests.length, 1);
     assert.equal(body.output[0].content[0].text, 'No code tool was exposed.');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('adapter server executes relay-emulated computer actions inside the Chat Completions loop', async () => {
+  const upstreamRequests: any[] = [];
+  const executedRequests: any[] = [];
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'computer',
+      mode: 'relay-emulated',
+      relayToolName: 'relay_computer',
+    }],
+    hostedToolExecutors: {
+      computer: createCodexProviderRelayComputerExecutor({
+        async execute(request) {
+          executedRequests.push(JSON.parse(JSON.stringify({
+            actions: request.actions,
+            display: request.display,
+          })));
+          return {
+            screenshot: {
+              b64_png: 'aW1hZ2U=',
+              detail: 'high',
+            },
+            observations: ['Clicked search field', 'Screenshot captured'],
+          };
+        },
+      }),
+    },
+    fetchImpl: (async (_url, init) => {
+      const requestBody = JSON.parse(String(init?.body ?? '{}'));
+      upstreamRequests.push(requestBody);
+      if (upstreamRequests.length === 1) {
+        assert.equal(requestBody.tools[0].function.name, 'relay_computer');
+        assert.deepEqual(requestBody.tool_choice, {
+          type: 'function',
+          function: {
+            name: 'relay_computer',
+          },
+        });
+        return new Response(JSON.stringify({
+          id: 'chatcmpl_computer_1',
+          created: 1_700_000_521,
+          model: 'relay-computer-model',
+          choices: [{
+            message: {
+              tool_calls: [{
+                id: 'call_computer_1',
+                type: 'function',
+                function: {
+                  name: 'relay_computer',
+                  arguments: '{"actions":[{"type":"click","x":10,"y":20},{"type":"screenshot"}],"display":{"width":1280,"height":720,"environment":"browser"}}',
+                },
+              }],
+            },
+            finish_reason: 'tool_calls',
+          }],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      assert.equal(requestBody.messages.at(-2).tool_calls[0].function.name, 'relay_computer');
+      assert.equal(requestBody.messages.at(-1).role, 'tool');
+      assert.equal(requestBody.messages.at(-1).tool_call_id, 'call_computer_1');
+      assert.match(requestBody.messages.at(-1).content, /Screenshot captured/u);
+      assert.match(requestBody.messages.at(-1).content, /aW1hZ2U=/u);
+      return new Response(JSON.stringify({
+        id: 'chatcmpl_computer_2',
+        created: 1_700_000_522,
+        model: 'relay-computer-model',
+        choices: [{
+          message: {
+            content: 'Used the computer through the relay.',
+          },
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'relay-computer-model',
+        input: 'Use the computer.',
+        tools: [{
+          type: 'computer_use_preview',
+        }],
+        tool_choice: 'computer_use_preview',
+      }),
+    });
+    const body = await response.json() as any;
+    assert.equal(response.status, 200);
+    assert.equal(upstreamRequests.length, 2);
+    assert.equal(executedRequests.length, 1);
+    assert.deepEqual(executedRequests[0], {
+      actions: [{
+        type: 'click',
+        x: 10,
+        y: 20,
+      }, {
+        type: 'screenshot',
+      }],
+      display: {
+        width: 1280,
+        height: 720,
+        environment: 'browser',
+      },
+    });
+    assert.equal(body.output[0].content[0].text, 'Used the computer through the relay.');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('adapter server does not expose relay-emulated computer without an executor', async () => {
+  const upstreamRequests: any[] = [];
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'computer',
+      mode: 'relay-emulated',
+      relayToolName: 'relay_computer',
+    }],
+    hostedToolExecutors: {},
+    fetchImpl: (async (_url, init) => {
+      const requestBody = JSON.parse(String(init?.body ?? '{}'));
+      upstreamRequests.push(requestBody);
+      assert.equal(requestBody.tools, undefined);
+      assert.equal(requestBody.tool_choice, undefined);
+      return new Response(JSON.stringify({
+        id: 'chatcmpl_computer_no_executor',
+        created: 1_700_000_523,
+        model: 'relay-computer-model',
+        choices: [{
+          message: {
+            content: 'No computer tool was exposed.',
+          },
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'relay-computer-model',
+        input: 'Use the computer.',
+        tools: [{
+          type: 'computer',
+        }],
+        tool_choice: 'computer',
+      }),
+    });
+    const body = await response.json() as any;
+    assert.equal(response.status, 200);
+    assert.equal(upstreamRequests.length, 1);
+    assert.equal(body.output[0].content[0].text, 'No computer tool was exposed.');
   } finally {
     await server.stop();
   }

@@ -7,8 +7,11 @@ import {
   createCodexProviderRelayEmbeddingsApiProvider,
   createCodexProviderRelayFileSearchExecutor,
   createCodexProviderRelayInMemoryVectorFileSearchSource,
+  createCodexProviderRelayLocalVectorFileSearchSource,
+  createCodexProviderRelayMemoryLocalVectorIndexStore,
   createCodexProviderRelayMemoryFileSearchSource,
   createCodexProviderRelayOpenRouterEmbeddingProvider,
+  createCodexProviderRelaySqliteLocalVectorIndexStore,
   createCodexProviderRelaySqliteFtsFileSearchSource,
   type CodexProviderRelayEmbeddingProvider,
   type CodexProviderRelayFileSearchExecutorContent,
@@ -63,6 +66,140 @@ function createKeywordEmbeddingProvider(keywords: string[]): CodexProviderRelayE
       };
     },
   };
+}
+
+function createCountingKeywordEmbeddingProvider(keywords: string[]): {
+  provider: CodexProviderRelayEmbeddingProvider;
+  embeddedTexts: string[];
+} {
+  const embeddedTexts: string[] = [];
+  return {
+    embeddedTexts,
+    provider: {
+      model: 'test-counting-keyword-embedding',
+      embed(input) {
+        embeddedTexts.push(...input);
+        return {
+          model: 'test-counting-keyword-embedding',
+          dimensions: keywords.length,
+          embeddings: input.map((text) => {
+            const lower = text.toLowerCase();
+            return keywords.map((keyword) => {
+              const matches = lower.match(new RegExp(keyword, 'gu'));
+              return matches?.length ?? 0;
+            });
+          }),
+        };
+      },
+    },
+  };
+}
+
+function createFakeSqliteLocalVectorDatabase() {
+  const documents = new Map<string, Record<string, unknown>>();
+  const chunks = new Map<string, Record<string, unknown>>();
+  const statements: Array<{ operation: 'all' | 'run'; sql: string; params: unknown[] }> = [];
+  const database = {
+    all(sql: string, params: unknown[] = []): Record<string, unknown>[] {
+      statements.push({ operation: 'all', sql, params });
+      if (/FROM\s+"[^"]+_documents"/u.test(sql)) {
+        const document = documents.get(String(params[0]));
+        return document ? [document] : [];
+      }
+      if (/FROM\s+"[^"]+_chunks"/u.test(sql)) {
+        const sourceName = String(params[0]);
+        return [...chunks.values()]
+          .filter((chunk) => chunk.source_name === sourceName)
+          .sort((left, right) => (
+            String(left.path).localeCompare(String(right.path))
+            || Number(left.chunk_index) - Number(right.chunk_index)
+          ));
+      }
+      return [];
+    },
+    run(sql: string, params: unknown[] = []): void {
+      statements.push({ operation: 'run', sql, params });
+      if (/INSERT INTO\s+"[^"]+_documents"/u.test(sql)) {
+        const [
+          id,
+          sourceName,
+          root,
+          documentPath,
+          uri,
+          title,
+          filename,
+          size,
+          mtimeMs,
+          contentHash,
+          embeddingModel,
+          updatedAt,
+        ] = params;
+        documents.set(String(id), {
+          id,
+          source_name: sourceName,
+          root,
+          path: documentPath,
+          uri,
+          title,
+          filename,
+          size,
+          mtime_ms: mtimeMs,
+          content_hash: contentHash,
+          embedding_model: embeddingModel,
+          updated_at: updatedAt,
+        });
+        return;
+      }
+      if (/DELETE FROM\s+"[^"]+_chunks"\s+WHERE document_id = \?/u.test(sql)) {
+        const documentId = String(params[0]);
+        for (const [id, chunk] of chunks.entries()) {
+          if (chunk.document_id === documentId) {
+            chunks.delete(id);
+          }
+        }
+        return;
+      }
+      if (/INSERT INTO\s+"[^"]+_chunks"/u.test(sql)) {
+        const [
+          id,
+          documentId,
+          sourceName,
+          root,
+          chunkPath,
+          uri,
+          title,
+          filename,
+          text,
+          chunkIndex,
+          startLine,
+          endLine,
+          embeddingJson,
+          metadataJson,
+        ] = params;
+        chunks.set(String(id), {
+          id,
+          document_id: documentId,
+          source_name: sourceName,
+          root,
+          path: chunkPath,
+          uri,
+          title,
+          filename,
+          text,
+          chunk_index: chunkIndex,
+          start_line: startLine,
+          end_line: endLine,
+          embedding_json: embeddingJson,
+          metadata_json: metadataJson,
+        });
+        return;
+      }
+      if (/DELETE FROM\s+"[^"]+_documents"\s+WHERE id = \?/u.test(sql)) {
+        documents.delete(String(params[0]));
+      }
+    },
+  };
+  return { database, statements };
 }
 
 test('local file_search executor returns OpenAI-style chunks from explicit roots only', async () => {
@@ -507,6 +644,240 @@ test('in-memory vector source honors hybrid_search weights', async () => {
   const textContent = textOnly.content as CodexProviderRelayFileSearchExecutorContent;
   assert.equal(vectorContent.data[0].filename, 'semantic.md');
   assert.equal(textContent.data[0].filename, 'lexical.md');
+});
+
+test('local-vector file_search source chunks files and reuses cached embeddings', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-provider-relay-local-vector-'));
+  await fs.mkdir(path.join(root, 'docs'), { recursive: true });
+  await fs.mkdir(path.join(root, 'node_modules', 'ignored'), { recursive: true });
+  await fs.writeFile(path.join(root, 'docs', 'invoice.md'), [
+    '# Invoice runbook',
+    'Payment invoice reconciliation is the semantic search target.',
+    'The second paragraph keeps enough text to force chunking.',
+    'Invoice approvals and payment batches should rank highly.',
+  ].join('\n'));
+  await fs.writeFile(path.join(root, 'node_modules', 'ignored', 'invoice.md'), 'invoice should stay ignored');
+  const { provider, embeddedTexts } = createCountingKeywordEmbeddingProvider(['invoice', 'payment', 'recipe']);
+  const deltas: any[] = [];
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayLocalVectorFileSearchSource({
+        name: 'workspace-vector',
+        roots: [root],
+        embeddingProvider: provider,
+        indexStore: createCodexProviderRelayMemoryLocalVectorIndexStore(),
+        chunking: {
+          maxChars: 90,
+          overlapChars: 0,
+        },
+      }),
+    ],
+    maxResults: 3,
+  });
+
+  const first = await executor({
+    ...baseRequest({
+      query: 'payment invoice',
+    }),
+    emitDelta: async (delta, metadata) => {
+      deltas.push({ delta, metadata });
+    },
+  });
+  const firstContent = first.content as CodexProviderRelayFileSearchExecutorContent;
+  const afterFirstSearchEmbeddings = embeddedTexts.length;
+
+  const second = await executor({
+    ...baseRequest({
+      query: 'payment invoice',
+    }),
+    emitDelta: async (delta, metadata) => {
+      deltas.push({ delta, metadata });
+    },
+  });
+  const secondContent = second.content as CodexProviderRelayFileSearchExecutorContent;
+  const afterSecondSearchEmbeddings = embeddedTexts.length;
+  await fs.rm(path.join(root, 'docs', 'invoice.md'));
+  const third = await executor({
+    ...baseRequest({
+      query: 'payment invoice',
+    }),
+    emitDelta: async (delta, metadata) => {
+      deltas.push({ delta, metadata });
+    },
+  });
+  const thirdContent = third.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.equal(firstContent.provider, 'local-vector');
+  assert.equal(firstContent.data.length, 1);
+  assert.equal(firstContent.data[0].filename, 'invoice.md');
+  assert.equal(firstContent.data[0].attributes.source_type, 'local-vector');
+  assert.equal(firstContent.data[0].attributes.embedding_model, 'test-counting-keyword-embedding');
+  assert.match(firstContent.data[0].content.map((chunk) => chunk.text).join('\n'), /payment invoice/iu);
+  assert.equal(firstContent.data.some((entry) => String(entry.attributes.path).includes('node_modules')), false);
+  assert.equal(secondContent.data[0].filename, 'invoice.md');
+  assert.ok(afterFirstSearchEmbeddings > 1);
+  assert.equal(afterSecondSearchEmbeddings, afterFirstSearchEmbeddings + 1);
+  assert.equal(embeddedTexts.length, afterSecondSearchEmbeddings + 1);
+  assert.equal(thirdContent.data.length, 0);
+  assert.equal(deltas.some((entry) => entry.delta === 'local vector file indexed'), true);
+  assert.equal(deltas.some((entry) => entry.delta === 'local vector file cache hit'), true);
+  assert.equal(deltas.some((entry) => entry.delta === 'local vector stale documents removed'), true);
+});
+
+test('local-vector source honors hybrid_search weights', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-provider-relay-local-vector-hybrid-'));
+  await fs.mkdir(path.join(root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(root, 'docs', 'semantic.md'), [
+    'semantic semantic semantic',
+    'background note without the lexical query marker',
+  ].join('\n'));
+  await fs.writeFile(path.join(root, 'docs', 'lexical.md'), [
+    'queryterm queryterm queryterm queryterm queryterm',
+    'plain lexical-only note',
+  ].join('\n'));
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [{
+      type: 'local-vector',
+      name: 'local-hybrid',
+      roots: [root],
+      embeddingProvider: createKeywordEmbeddingProvider(['semantic']),
+      indexStore: createCodexProviderRelayMemoryLocalVectorIndexStore(),
+      vectorWeight: 1,
+      textWeight: 0,
+    }],
+    maxResults: 2,
+  });
+
+  const vectorOnly = await executor(baseRequest({
+    query: 'semantic queryterm',
+    ranking_options: {
+      hybrid_search: {
+        embedding_weight: 1,
+        text_weight: 0,
+      },
+    },
+  }));
+  const textOnly = await executor(baseRequest({
+    query: 'semantic queryterm',
+    ranking_options: {
+      hybrid_search: {
+        embedding_weight: 0,
+        text_weight: 1,
+      },
+    },
+  }));
+
+  const vectorContent = vectorOnly.content as CodexProviderRelayFileSearchExecutorContent;
+  const textContent = textOnly.content as CodexProviderRelayFileSearchExecutorContent;
+  assert.equal(vectorContent.data[0].filename, 'semantic.md');
+  assert.equal(textContent.data[0].filename, 'lexical.md');
+});
+
+test('sqlite local-vector index store persists documents and chunks', async () => {
+  const { database, statements } = createFakeSqliteLocalVectorDatabase();
+  const store = createCodexProviderRelaySqliteLocalVectorIndexStore({
+    database,
+    tablePrefix: 'relay_vec',
+  });
+  const document = {
+    id: 'doc-1',
+    sourceName: 'sqlite-vector',
+    root: '/repo',
+    path: 'docs/sqlite-vector.md',
+    uri: 'file:///repo/docs/sqlite-vector.md',
+    title: 'docs/sqlite-vector.md',
+    filename: 'sqlite-vector.md',
+    size: 42,
+    mtimeMs: 1234,
+    contentHash: 'hash-1',
+    embeddingModel: 'test-embedding',
+    updatedAt: '2026-06-07T00:00:00.000Z',
+  };
+  const chunk = {
+    id: 'chunk-1',
+    documentId: 'doc-1',
+    sourceName: 'sqlite-vector',
+    root: '/repo',
+    path: 'docs/sqlite-vector.md',
+    uri: 'file:///repo/docs/sqlite-vector.md',
+    title: 'docs/sqlite-vector.md',
+    filename: 'sqlite-vector.md',
+    text: 'sqlite vector chunk text',
+    chunkIndex: 0,
+    startLine: 1,
+    endLine: 2,
+    embedding: [1, 0, 0],
+    metadata: {
+      category: 'docs',
+    },
+  };
+
+  await store.upsertDocument(document, [chunk]);
+  const loadedDocument = await store.getDocument('doc-1');
+  const loadedChunks = await store.listChunks('sqlite-vector');
+  await store.deleteDocuments(['doc-1']);
+
+  assert.equal(loadedDocument?.path, 'docs/sqlite-vector.md');
+  assert.equal(loadedDocument?.embeddingModel, 'test-embedding');
+  assert.equal(loadedChunks.length, 1);
+  assert.deepEqual(loadedChunks[0].embedding, [1, 0, 0]);
+  assert.equal(loadedChunks[0].metadata?.category, 'docs');
+  assert.equal((await store.getDocument('doc-1')), null);
+  assert.equal((await store.listChunks('sqlite-vector')).length, 0);
+  assert.equal(statements.some((statement) => /CREATE TABLE IF NOT EXISTS "relay_vec_documents"/u.test(statement.sql)), true);
+  assert.equal(statements.some((statement) => /CREATE TABLE IF NOT EXISTS "relay_vec_chunks"/u.test(statement.sql)), true);
+});
+
+test('local-vector source reuses sqlite index store across store instances', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-provider-relay-local-vector-sqlite-'));
+  await fs.mkdir(path.join(root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(root, 'docs', 'persisted.md'), [
+    'Persistent invoice payment knowledge.',
+    'The sqlite vector store should keep chunk embeddings between source instances.',
+  ].join('\n'));
+  const { database } = createFakeSqliteLocalVectorDatabase();
+  const { provider, embeddedTexts } = createCountingKeywordEmbeddingProvider(['invoice', 'payment']);
+  const firstExecutor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayLocalVectorFileSearchSource({
+        name: 'sqlite-vector',
+        roots: [root],
+        embeddingProvider: provider,
+        indexStore: createCodexProviderRelaySqliteLocalVectorIndexStore({
+          database,
+          tablePrefix: 'relay_vec',
+        }),
+      }),
+    ],
+  });
+
+  const first = await firstExecutor(baseRequest({
+    query: 'invoice payment',
+  }));
+  const afterFirstSearchEmbeddings = embeddedTexts.length;
+  const secondExecutor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayLocalVectorFileSearchSource({
+        name: 'sqlite-vector',
+        roots: [root],
+        embeddingProvider: provider,
+        indexStore: createCodexProviderRelaySqliteLocalVectorIndexStore({
+          database,
+          tablePrefix: 'relay_vec',
+        }),
+      }),
+    ],
+  });
+  const second = await secondExecutor(baseRequest({
+    query: 'invoice payment',
+  }));
+  const firstContent = first.content as CodexProviderRelayFileSearchExecutorContent;
+  const secondContent = second.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.equal(firstContent.data[0].filename, 'persisted.md');
+  assert.equal(secondContent.data[0].filename, 'persisted.md');
+  assert.ok(afterFirstSearchEmbeddings > 1);
+  assert.equal(embeddedTexts.length, afterFirstSearchEmbeddings + 1);
 });
 
 test('embeddings API provider posts OpenAI-compatible embedding requests', async () => {

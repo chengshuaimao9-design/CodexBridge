@@ -26,6 +26,7 @@ export interface CodexProviderRelayFileSearchExecutorOptions {
 export type CodexProviderRelayFileSearchSourceInput =
   | CodexProviderRelayFileSearchSource
   | CodexProviderRelayLocalFileSearchSourceOptions
+  | CodexProviderRelayLocalVectorFileSearchSourceOptions
   | CodexProviderRelayMemoryFileSearchSourceOptions
   | CodexProviderRelaySqliteFtsFileSearchSourceOptions
   | CodexProviderRelayInMemoryVectorFileSearchSourceOptions;
@@ -168,6 +169,91 @@ export interface CodexProviderRelayOpenRouterEmbeddingProviderOptions
   extends Omit<CodexProviderRelayEmbeddingsApiProviderOptions, 'endpoint' | 'model'> {
   model?: string | null;
   endpoint?: string | null;
+}
+
+export interface CodexProviderRelayLocalVectorChunkingOptions {
+  maxChars?: number | null;
+  overlapChars?: number | null;
+  maxChunksPerFile?: number | null;
+}
+
+export interface CodexProviderRelayLocalVectorFileSearchSourceOptions
+  extends Omit<CodexProviderRelayLocalFileSearchSourceOptions, 'type'> {
+  type?: 'local-vector' | null;
+  embeddingProvider: CodexProviderRelayEmbeddingProvider;
+  indexStore?: CodexProviderRelayLocalVectorIndexStore | null;
+  chunking?: CodexProviderRelayLocalVectorChunkingOptions | null;
+  vectorWeight?: number | null;
+  textWeight?: number | null;
+  embeddingBatchSize?: number | null;
+}
+
+export interface CodexProviderRelayLocalVectorIndexDocument {
+  id: string;
+  sourceName: string;
+  root: string;
+  path: string;
+  uri: string;
+  title: string;
+  filename: string;
+  size: number;
+  mtimeMs: number;
+  contentHash: string;
+  embeddingModel: string;
+  updatedAt: string;
+}
+
+export interface CodexProviderRelayLocalVectorIndexChunk {
+  id: string;
+  documentId: string;
+  sourceName: string;
+  root: string;
+  path: string;
+  uri: string;
+  title: string;
+  filename: string;
+  text: string;
+  chunkIndex: number;
+  startLine: number;
+  endLine: number;
+  embedding: number[];
+  metadata?: JsonRecord | null;
+}
+
+export interface CodexProviderRelayLocalVectorIndexStore {
+  getDocument(
+    id: string,
+  ): Promise<CodexProviderRelayLocalVectorIndexDocument | null> | CodexProviderRelayLocalVectorIndexDocument | null;
+  upsertDocument(
+    document: CodexProviderRelayLocalVectorIndexDocument,
+    chunks: CodexProviderRelayLocalVectorIndexChunk[],
+  ): Promise<void> | void;
+  listChunks(
+    sourceName: string,
+  ): Promise<CodexProviderRelayLocalVectorIndexChunk[]> | CodexProviderRelayLocalVectorIndexChunk[];
+  deleteDocuments?(ids: string[]): Promise<void> | void;
+}
+
+export interface CodexProviderRelaySqliteLocalVectorIndexStoreDatabase {
+  all(sql: string, params?: unknown[]): Promise<JsonRecord[]> | JsonRecord[];
+  run(sql: string, params?: unknown[]): Promise<unknown> | unknown;
+}
+
+export interface CodexProviderRelaySqliteLocalVectorIndexStoreQueryRequest {
+  operation: 'all' | 'run';
+  sql: string;
+  params: unknown[];
+}
+
+export type CodexProviderRelaySqliteLocalVectorIndexStoreQueryFunction = (
+  request: CodexProviderRelaySqliteLocalVectorIndexStoreQueryRequest,
+) => Promise<unknown> | unknown;
+
+export interface CodexProviderRelaySqliteLocalVectorIndexStoreOptions {
+  database?: CodexProviderRelaySqliteLocalVectorIndexStoreDatabase | null;
+  query?: CodexProviderRelaySqliteLocalVectorIndexStoreQueryFunction | null;
+  tablePrefix?: string | null;
+  initializeSchema?: boolean | null;
 }
 
 export interface CodexProviderRelayInMemoryVectorFileSearchSourceOptions {
@@ -330,9 +416,34 @@ interface NormalizedInMemoryVectorFileSearchOptions {
   textWeight: number;
 }
 
+interface NormalizedLocalVectorFileSearchOptions {
+  local: NormalizedLocalFileSearchOptions;
+  name: string;
+  type: 'local-vector';
+  embeddingProvider: CodexProviderRelayEmbeddingProvider;
+  indexStore: CodexProviderRelayLocalVectorIndexStore;
+  chunking: NormalizedLocalVectorChunkingOptions;
+  vectorWeight: number;
+  textWeight: number;
+  embeddingBatchSize: number;
+}
+
+interface NormalizedLocalVectorChunkingOptions {
+  maxChars: number;
+  overlapChars: number;
+  maxChunksPerFile: number;
+}
+
 interface EmbeddedMemoryFileSearchDocument {
   document: NormalizedMemoryFileSearchDocument;
   embedding: number[];
+}
+
+interface LocalVectorTextChunk {
+  text: string;
+  chunkIndex: number;
+  startLine: number;
+  endLine: number;
 }
 
 interface LocalFileSearchRoot {
@@ -387,6 +498,189 @@ const DEFAULT_EMBEDDINGS_API_MODEL = 'qwen/qwen3-embedding-8b';
 const DEFAULT_EMBEDDINGS_API_ENDPOINT = 'https://openrouter.ai/api/v1/embeddings';
 const DEFAULT_OPENROUTER_EMBEDDING_MODEL = DEFAULT_EMBEDDINGS_API_MODEL;
 const DEFAULT_OPENROUTER_EMBEDDINGS_ENDPOINT = DEFAULT_EMBEDDINGS_API_ENDPOINT;
+
+export function createCodexProviderRelayMemoryLocalVectorIndexStore(): CodexProviderRelayLocalVectorIndexStore {
+  const documents = new Map<string, CodexProviderRelayLocalVectorIndexDocument>();
+  const chunksByDocument = new Map<string, CodexProviderRelayLocalVectorIndexChunk[]>();
+  return {
+    getDocument(id: string): CodexProviderRelayLocalVectorIndexDocument | null {
+      return documents.get(id) ?? null;
+    },
+    upsertDocument(
+      document: CodexProviderRelayLocalVectorIndexDocument,
+      chunks: CodexProviderRelayLocalVectorIndexChunk[],
+    ): void {
+      documents.set(document.id, document);
+      chunksByDocument.set(document.id, chunks);
+    },
+    listChunks(sourceName: string): CodexProviderRelayLocalVectorIndexChunk[] {
+      const chunks: CodexProviderRelayLocalVectorIndexChunk[] = [];
+      for (const document of documents.values()) {
+        if (document.sourceName === sourceName) {
+          chunks.push(...(chunksByDocument.get(document.id) ?? []));
+        }
+      }
+      return chunks;
+    },
+    deleteDocuments(ids: string[]): void {
+      for (const id of ids) {
+        documents.delete(id);
+        chunksByDocument.delete(id);
+      }
+    },
+  };
+}
+
+export function createCodexProviderRelaySqliteLocalVectorIndexStore(
+  options: CodexProviderRelaySqliteLocalVectorIndexStoreOptions,
+): CodexProviderRelayLocalVectorIndexStore {
+  const query = normalizeSqliteLocalVectorIndexStoreQuery(options);
+  const tablePrefix = normalizeSqliteTablePrefix(options.tablePrefix, 'codex_provider_relay_local_vector');
+  const documentsTable = normalizeSqlIdentifier(`${tablePrefix}_documents`, 'sqlite local-vector documents table');
+  const chunksTable = normalizeSqlIdentifier(`${tablePrefix}_chunks`, 'sqlite local-vector chunks table');
+  const chunksSourceIndex = normalizeSqlIdentifier(`${tablePrefix}_chunks_source_path_idx`, 'sqlite local-vector source index');
+  const chunksDocumentIndex = normalizeSqlIdentifier(`${tablePrefix}_chunks_document_idx`, 'sqlite local-vector document index');
+  const shouldInitialize = options.initializeSchema !== false;
+  let initializationPromise: Promise<void> | null = null;
+
+  async function ensureInitialized(): Promise<void> {
+    if (!shouldInitialize) {
+      return;
+    }
+    initializationPromise ??= initializeSqliteLocalVectorIndexStore({
+      query,
+      documentsTable,
+      chunksTable,
+      chunksSourceIndex,
+      chunksDocumentIndex,
+    });
+    await initializationPromise;
+  }
+
+  return {
+    async getDocument(id: string): Promise<CodexProviderRelayLocalVectorIndexDocument | null> {
+      await ensureInitialized();
+      const rows = await sqliteLocalVectorAll(query, {
+        sql: [
+          'SELECT *',
+          `FROM ${documentsTable}`,
+          'WHERE id = ?',
+          'LIMIT 1',
+        ].join(' '),
+        params: [id],
+      });
+      return sqliteLocalVectorDocumentFromRow(rows[0]);
+    },
+    async upsertDocument(
+      document: CodexProviderRelayLocalVectorIndexDocument,
+      chunks: CodexProviderRelayLocalVectorIndexChunk[],
+    ): Promise<void> {
+      await ensureInitialized();
+      await sqliteLocalVectorRun(query, {
+        sql: [
+          `INSERT INTO ${documentsTable}`,
+          '(id, source_name, root, path, uri, title, filename, size, mtime_ms, content_hash, embedding_model, updated_at)',
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          'ON CONFLICT(id) DO UPDATE SET',
+          'source_name = excluded.source_name,',
+          'root = excluded.root,',
+          'path = excluded.path,',
+          'uri = excluded.uri,',
+          'title = excluded.title,',
+          'filename = excluded.filename,',
+          'size = excluded.size,',
+          'mtime_ms = excluded.mtime_ms,',
+          'content_hash = excluded.content_hash,',
+          'embedding_model = excluded.embedding_model,',
+          'updated_at = excluded.updated_at',
+        ].join(' '),
+        params: [
+          document.id,
+          document.sourceName,
+          document.root,
+          document.path,
+          document.uri,
+          document.title,
+          document.filename,
+          document.size,
+          document.mtimeMs,
+          document.contentHash,
+          document.embeddingModel,
+          document.updatedAt,
+        ],
+      });
+      await sqliteLocalVectorRun(query, {
+        sql: `DELETE FROM ${chunksTable} WHERE document_id = ?`,
+        params: [document.id],
+      });
+      for (const chunk of chunks) {
+        await sqliteLocalVectorRun(query, {
+          sql: [
+            `INSERT INTO ${chunksTable}`,
+            '(id, document_id, source_name, root, path, uri, title, filename, text, chunk_index, start_line, end_line, embedding_json, metadata_json)',
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            'ON CONFLICT(id) DO UPDATE SET',
+            'document_id = excluded.document_id,',
+            'source_name = excluded.source_name,',
+            'root = excluded.root,',
+            'path = excluded.path,',
+            'uri = excluded.uri,',
+            'title = excluded.title,',
+            'filename = excluded.filename,',
+            'text = excluded.text,',
+            'chunk_index = excluded.chunk_index,',
+            'start_line = excluded.start_line,',
+            'end_line = excluded.end_line,',
+            'embedding_json = excluded.embedding_json,',
+            'metadata_json = excluded.metadata_json',
+          ].join(' '),
+          params: [
+            chunk.id,
+            chunk.documentId,
+            chunk.sourceName,
+            chunk.root,
+            chunk.path,
+            chunk.uri,
+            chunk.title,
+            chunk.filename,
+            chunk.text,
+            chunk.chunkIndex,
+            chunk.startLine,
+            chunk.endLine,
+            JSON.stringify(chunk.embedding),
+            JSON.stringify(normalizeFileSearchAttributes(chunk.metadata)),
+          ],
+        });
+      }
+    },
+    async listChunks(sourceName: string): Promise<CodexProviderRelayLocalVectorIndexChunk[]> {
+      await ensureInitialized();
+      const rows = await sqliteLocalVectorAll(query, {
+        sql: [
+          'SELECT *',
+          `FROM ${chunksTable}`,
+          'WHERE source_name = ?',
+          'ORDER BY path ASC, chunk_index ASC',
+        ].join(' '),
+        params: [sourceName],
+      });
+      return rows.map(sqliteLocalVectorChunkFromRow).filter(Boolean) as CodexProviderRelayLocalVectorIndexChunk[];
+    },
+    async deleteDocuments(ids: string[]): Promise<void> {
+      await ensureInitialized();
+      for (const id of ids.map(normalizeString).filter(Boolean)) {
+        await sqliteLocalVectorRun(query, {
+          sql: `DELETE FROM ${chunksTable} WHERE document_id = ?`,
+          params: [id],
+        });
+        await sqliteLocalVectorRun(query, {
+          sql: `DELETE FROM ${documentsTable} WHERE id = ?`,
+          params: [id],
+        });
+      }
+    },
+  };
+}
 
 export function createCodexProviderRelayFileSearchExecutor(
   options: CodexProviderRelayFileSearchExecutorOptions,
@@ -567,6 +861,211 @@ export function createCodexProviderRelayLocalFileSearchSource(
         metadata: {
           provider: 'local-fs',
           source: normalizedOptions.name,
+        },
+      };
+    },
+  };
+}
+
+export function createCodexProviderRelayLocalVectorFileSearchSource(
+  options: CodexProviderRelayLocalVectorFileSearchSourceOptions,
+): CodexProviderRelayFileSearchSource {
+  assertExplicitLocalFileSearchRoots(options.roots);
+  const normalizedOptionsPromise = normalizeLocalVectorFileSearchOptions(options);
+  const sourceName = normalizeString(options.name) || 'local-vector';
+  return {
+    name: sourceName,
+    type: 'local-vector',
+    async search(request: CodexProviderRelayFileSearchSourceRequest): Promise<CodexProviderRelayFileSearchSourceResult> {
+      const normalizedOptions = await normalizedOptionsPromise;
+      const maxResults = request.maxResults;
+      const includeContent = typeof request.includeContent === 'boolean'
+        ? request.includeContent
+        : normalizedOptions.local.includeContent;
+      const maxBytesPerFile = Math.min(request.maxBytesPerFile, normalizedOptions.local.maxBytesPerFile);
+
+      await request.emitDelta?.('indexing local vector files', {
+        source: normalizedOptions.name,
+        roots: normalizedOptions.local.roots.map((root) => root.path),
+        embeddingModel: normalizedOptions.embeddingProvider.model,
+      });
+
+      const candidates = await collectCandidateFiles(normalizedOptions.local, request.pathGlob);
+      const staleDocumentIds = request.pathGlob
+        ? []
+        : await deleteStaleLocalVectorDocuments(normalizedOptions, candidates);
+      if (staleDocumentIds.length > 0) {
+        await request.emitDelta?.('local vector stale documents removed', {
+          source: normalizedOptions.name,
+          count: staleDocumentIds.length,
+        });
+      }
+      let scannedFiles = 0;
+      let skippedFiles = 0;
+      let indexedFiles = 0;
+      let cachedFiles = 0;
+      for (const candidate of candidates) {
+        if (scannedFiles >= normalizedOptions.local.maxFilesScanned) {
+          break;
+        }
+        scannedFiles += 1;
+        const indexResult = await indexLocalVectorCandidate({
+          candidate,
+          options: normalizedOptions,
+          maxBytesPerFile,
+        });
+        if (indexResult.status === 'skipped') {
+          skippedFiles += 1;
+        } else if (indexResult.status === 'cached') {
+          cachedFiles += 1;
+          await request.emitDelta?.('local vector file cache hit', {
+            source: normalizedOptions.name,
+            path: candidate.relativePath,
+          });
+        } else {
+          indexedFiles += 1;
+          await request.emitDelta?.('local vector file indexed', {
+            source: normalizedOptions.name,
+            path: candidate.relativePath,
+            chunkCount: indexResult.chunkCount,
+          });
+        }
+      }
+
+      const queryEmbedding = normalizeEmbeddingVector(
+        (await normalizedOptions.embeddingProvider.embed([request.query])).embeddings[0],
+      );
+      if (queryEmbedding.length === 0) {
+        return {
+          results: [],
+          scannedFiles,
+          skippedFiles,
+          metadata: {
+            provider: 'local-vector',
+            source: normalizedOptions.name,
+            indexedFiles,
+            cachedFiles,
+          },
+        };
+      }
+
+      await request.emitDelta?.('querying local vector index', {
+        source: normalizedOptions.name,
+        embeddingModel: normalizedOptions.embeddingProvider.model,
+        indexedFiles,
+        cachedFiles,
+        maxResults,
+      });
+
+      const textWeight = request.rankingOptions.hybridSearch?.textWeight ?? normalizedOptions.textWeight;
+      const vectorWeight = request.rankingOptions.hybridSearch?.embeddingWeight ?? normalizedOptions.vectorWeight;
+      const chunks = await normalizedOptions.indexStore.listChunks(normalizedOptions.name);
+      const groupedResults = new Map<string, {
+        chunkScores: Array<{
+          chunk: CodexProviderRelayLocalVectorIndexChunk;
+          score: number;
+          vectorScore: number;
+          lexicalScore: number;
+        }>;
+        maxVectorScore: number;
+        maxLexicalScore: number;
+        score: number;
+      }>();
+
+      for (const chunk of chunks) {
+        if (request.pathGlob && !pathMatchesGlob(chunk.path, request.pathGlob)) {
+          continue;
+        }
+        const vectorScore = cosineSimilarity(queryEmbedding, chunk.embedding);
+        const lexicalScore = lexicalScoreForText({
+          title: chunk.title,
+          path: chunk.path,
+          content: chunk.text,
+          terms: request.terms,
+        });
+        if (vectorScore <= 0 && lexicalScore <= 0) {
+          continue;
+        }
+        const normalizedLexicalScore = Math.min(1, lexicalScore / 40);
+        const score = (vectorScore * vectorWeight * 100) + (normalizedLexicalScore * textWeight * 100);
+        const entry = groupedResults.get(chunk.documentId) ?? {
+          chunkScores: [],
+          maxVectorScore: 0,
+          maxLexicalScore: 0,
+          score: 0,
+        };
+        entry.chunkScores.push({
+          chunk,
+          score,
+          vectorScore,
+          lexicalScore: normalizedLexicalScore,
+        });
+        entry.score = Math.max(entry.score, score);
+        entry.maxVectorScore = Math.max(entry.maxVectorScore, vectorScore);
+        entry.maxLexicalScore = Math.max(entry.maxLexicalScore, normalizedLexicalScore);
+        groupedResults.set(chunk.documentId, entry);
+      }
+
+      const results: CodexProviderRelayFileSearchSourceMatch[] = [];
+      for (const entry of groupedResults.values()) {
+        entry.chunkScores.sort((left, right) => right.score - left.score || left.chunk.chunkIndex - right.chunk.chunkIndex);
+        const bestChunk = entry.chunkScores[0]?.chunk;
+        if (!bestChunk || entry.score <= 0) {
+          continue;
+        }
+        const content = includeContent
+          ? entry.chunkScores.slice(0, 4).map(({ chunk }) => ({
+            type: 'text' as const,
+            text: chunk.text.slice(0, 1_500),
+            line: chunk.startLine,
+            start_line: chunk.startLine,
+            end_line: chunk.endLine,
+          }))
+          : [];
+        results.push({
+          file_id: stableFileSearchFileId(normalizedOptions.name, bestChunk.path),
+          filename: bestChunk.filename,
+          title: bestChunk.title,
+          uri: bestChunk.uri,
+          path: bestChunk.path,
+          root: bestChunk.root,
+          source: normalizedOptions.name,
+          sourceType: 'local-vector',
+          score: entry.score,
+          attributes: normalizeFileSearchAttributes({
+            ...(bestChunk.metadata && typeof bestChunk.metadata === 'object' ? bestChunk.metadata : {}),
+            filename: bestChunk.filename,
+            path: bestChunk.path,
+            root: bestChunk.root,
+            source: normalizedOptions.name,
+            source_type: 'local-vector',
+            embedding_model: normalizedOptions.embeddingProvider.model,
+            vector_score: Number(entry.maxVectorScore.toFixed(6)),
+            lexical_score: Number(entry.maxLexicalScore.toFixed(6)),
+            chunk_count: entry.chunkScores.length,
+          }),
+          content,
+        });
+        await request.emitDelta?.('local vector chunk matched', {
+          source: normalizedOptions.name,
+          path: bestChunk.path,
+          score: entry.score,
+          resultCount: results.length,
+        });
+      }
+
+      results.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+      return {
+        results: results.slice(0, maxResults),
+        scannedFiles,
+        skippedFiles,
+        metadata: {
+          provider: 'local-vector',
+          source: normalizedOptions.name,
+          embeddingModel: normalizedOptions.embeddingProvider.model,
+          indexedFiles,
+          cachedFiles,
+          chunkCount: chunks.length,
         },
       };
     },
@@ -990,6 +1489,13 @@ function normalizeFileSearchSource(
       type: normalizeString(adapter.type) || 'custom',
     };
   }
+  if (
+    source
+    && Array.isArray((source as CodexProviderRelayLocalVectorFileSearchSourceOptions).roots)
+    && (source as CodexProviderRelayLocalVectorFileSearchSourceOptions).embeddingProvider
+  ) {
+    return createCodexProviderRelayLocalVectorFileSearchSource(source as CodexProviderRelayLocalVectorFileSearchSourceOptions);
+  }
   if (source && Array.isArray((source as CodexProviderRelayLocalFileSearchSourceOptions).roots)) {
     return createCodexProviderRelayLocalFileSearchSource(source as CodexProviderRelayLocalFileSearchSourceOptions);
   }
@@ -1006,7 +1512,7 @@ function normalizeFileSearchSource(
   if (source && normalizeString((source as CodexProviderRelaySqliteFtsFileSearchSourceOptions).table)) {
     return createCodexProviderRelaySqliteFtsFileSearchSource(source as CodexProviderRelaySqliteFtsFileSearchSourceOptions);
   }
-  throw new Error('file_search sources must be source adapters, local-fs source options, memory-documents source options, sqlite-fts source options, or in-memory-vector source options.');
+  throw new Error('file_search sources must be source adapters, local-fs source options, local-vector source options, memory-documents source options, sqlite-fts source options, or in-memory-vector source options.');
 }
 
 async function normalizeLocalFileSearchOptions(
@@ -1043,6 +1549,50 @@ async function normalizeLocalFileSearchOptions(
       ...DEFAULT_IGNORE_EXTENSIONS,
       ...(Array.isArray(options.ignoreExtensions) ? options.ignoreExtensions : []),
     ].map((entry) => entry.toLowerCase())),
+  };
+}
+
+async function normalizeLocalVectorFileSearchOptions(
+  options: CodexProviderRelayLocalVectorFileSearchSourceOptions,
+): Promise<NormalizedLocalVectorFileSearchOptions> {
+  const embeddingProvider = options.embeddingProvider;
+  if (!embeddingProvider || typeof embeddingProvider.embed !== 'function') {
+    throw new Error('local-vector file_search source requires an embedding provider.');
+  }
+  const {
+    type: _type,
+    embeddingProvider: _embeddingProvider,
+    indexStore: _indexStore,
+    chunking: _chunking,
+    vectorWeight: _vectorWeight,
+    textWeight: _textWeight,
+    embeddingBatchSize: _embeddingBatchSize,
+    ...localOptions
+  } = options;
+  const local = await normalizeLocalFileSearchOptions({
+    ...localOptions,
+    name: normalizeString(options.name) || 'local-vector',
+  });
+  const chunking = options.chunking && typeof options.chunking === 'object'
+    ? options.chunking
+    : {};
+  return {
+    local: {
+      ...local,
+      name: normalizeString(options.name) || 'local-vector',
+    },
+    name: normalizeString(options.name) || 'local-vector',
+    type: 'local-vector',
+    embeddingProvider,
+    indexStore: options.indexStore ?? createCodexProviderRelayMemoryLocalVectorIndexStore(),
+    chunking: {
+      maxChars: clampInteger(chunking.maxChars, 400, 12_000, 1_600),
+      overlapChars: clampInteger(chunking.overlapChars, 0, 2_000, 200),
+      maxChunksPerFile: clampInteger(chunking.maxChunksPerFile, 1, 2_000, 200),
+    },
+    vectorWeight: clampNumber(options.vectorWeight, 0, 1, 0.7),
+    textWeight: clampNumber(options.textWeight, 0, 1, 0.3),
+    embeddingBatchSize: clampInteger(options.embeddingBatchSize, 1, 256, 32),
   };
 }
 
@@ -1097,6 +1647,170 @@ function normalizeMemoryFileSearchDocument(
     metadata: document.metadata && typeof document.metadata === 'object'
       ? document.metadata
       : null,
+  };
+}
+
+function normalizeSqliteLocalVectorIndexStoreQuery(
+  options: CodexProviderRelaySqliteLocalVectorIndexStoreOptions,
+): CodexProviderRelaySqliteLocalVectorIndexStoreQueryFunction {
+  if (typeof options.query === 'function') {
+    return options.query;
+  }
+  if (
+    options.database
+    && typeof options.database.all === 'function'
+    && typeof options.database.run === 'function'
+  ) {
+    return (request) => request.operation === 'all'
+      ? options.database!.all(request.sql, request.params)
+      : options.database!.run(request.sql, request.params);
+  }
+  throw new Error('sqlite local-vector index store requires a query function or database.all/database.run.');
+}
+
+async function initializeSqliteLocalVectorIndexStore({
+  query,
+  documentsTable,
+  chunksTable,
+  chunksSourceIndex,
+  chunksDocumentIndex,
+}: {
+  query: CodexProviderRelaySqliteLocalVectorIndexStoreQueryFunction;
+  documentsTable: string;
+  chunksTable: string;
+  chunksSourceIndex: string;
+  chunksDocumentIndex: string;
+}): Promise<void> {
+  await sqliteLocalVectorRun(query, {
+    sql: [
+      `CREATE TABLE IF NOT EXISTS ${documentsTable} (`,
+      'id TEXT PRIMARY KEY,',
+      'source_name TEXT NOT NULL,',
+      'root TEXT NOT NULL,',
+      'path TEXT NOT NULL,',
+      'uri TEXT NOT NULL,',
+      'title TEXT NOT NULL,',
+      'filename TEXT NOT NULL,',
+      'size INTEGER NOT NULL,',
+      'mtime_ms REAL NOT NULL,',
+      'content_hash TEXT NOT NULL,',
+      'embedding_model TEXT NOT NULL,',
+      'updated_at TEXT NOT NULL',
+      ')',
+    ].join(' '),
+    params: [],
+  });
+  await sqliteLocalVectorRun(query, {
+    sql: [
+      `CREATE TABLE IF NOT EXISTS ${chunksTable} (`,
+      'id TEXT PRIMARY KEY,',
+      'document_id TEXT NOT NULL,',
+      'source_name TEXT NOT NULL,',
+      'root TEXT NOT NULL,',
+      'path TEXT NOT NULL,',
+      'uri TEXT NOT NULL,',
+      'title TEXT NOT NULL,',
+      'filename TEXT NOT NULL,',
+      'text TEXT NOT NULL,',
+      'chunk_index INTEGER NOT NULL,',
+      'start_line INTEGER NOT NULL,',
+      'end_line INTEGER NOT NULL,',
+      'embedding_json TEXT NOT NULL,',
+      'metadata_json TEXT,',
+      `FOREIGN KEY(document_id) REFERENCES ${documentsTable}(id) ON DELETE CASCADE`,
+      ')',
+    ].join(' '),
+    params: [],
+  });
+  await sqliteLocalVectorRun(query, {
+    sql: `CREATE INDEX IF NOT EXISTS ${chunksSourceIndex} ON ${chunksTable} (source_name, path, chunk_index)`,
+    params: [],
+  });
+  await sqliteLocalVectorRun(query, {
+    sql: `CREATE INDEX IF NOT EXISTS ${chunksDocumentIndex} ON ${chunksTable} (document_id)`,
+    params: [],
+  });
+}
+
+async function sqliteLocalVectorAll(
+  query: CodexProviderRelaySqliteLocalVectorIndexStoreQueryFunction,
+  request: Omit<CodexProviderRelaySqliteLocalVectorIndexStoreQueryRequest, 'operation'>,
+): Promise<JsonRecord[]> {
+  const result = await query({
+    operation: 'all',
+    sql: request.sql,
+    params: request.params,
+  });
+  return Array.isArray(result)
+    ? result.filter((row): row is JsonRecord => Boolean(row) && typeof row === 'object' && !Array.isArray(row))
+    : [];
+}
+
+async function sqliteLocalVectorRun(
+  query: CodexProviderRelaySqliteLocalVectorIndexStoreQueryFunction,
+  request: Omit<CodexProviderRelaySqliteLocalVectorIndexStoreQueryRequest, 'operation'>,
+): Promise<void> {
+  await query({
+    operation: 'run',
+    sql: request.sql,
+    params: request.params,
+  });
+}
+
+function sqliteLocalVectorDocumentFromRow(
+  row: JsonRecord | undefined,
+): CodexProviderRelayLocalVectorIndexDocument | null {
+  if (!row) {
+    return null;
+  }
+  const id = normalizeString(row.id);
+  if (!id) {
+    return null;
+  }
+  return {
+    id,
+    sourceName: normalizeString(row.source_name),
+    root: normalizeString(row.root),
+    path: normalizeString(row.path),
+    uri: normalizeString(row.uri),
+    title: normalizeString(row.title),
+    filename: normalizeString(row.filename),
+    size: normalizeNonNegativeInteger(row.size),
+    mtimeMs: Number.isFinite(Number(row.mtime_ms)) ? Number(row.mtime_ms) : 0,
+    contentHash: normalizeString(row.content_hash),
+    embeddingModel: normalizeString(row.embedding_model),
+    updatedAt: normalizeString(row.updated_at),
+  };
+}
+
+function sqliteLocalVectorChunkFromRow(
+  row: JsonRecord | undefined,
+): CodexProviderRelayLocalVectorIndexChunk | null {
+  if (!row) {
+    return null;
+  }
+  const id = normalizeString(row.id);
+  const documentId = normalizeString(row.document_id);
+  const text = normalizeString(row.text);
+  if (!id || !documentId || !text) {
+    return null;
+  }
+  const metadata = parseJsonRecordOrNull(row.metadata_json);
+  return {
+    id,
+    documentId,
+    sourceName: normalizeString(row.source_name),
+    root: normalizeString(row.root),
+    path: normalizeString(row.path),
+    uri: normalizeString(row.uri),
+    title: normalizeString(row.title),
+    filename: normalizeString(row.filename),
+    text,
+    chunkIndex: normalizeNonNegativeInteger(row.chunk_index),
+    startLine: normalizeNonNegativeInteger(row.start_line) || 1,
+    endLine: normalizeNonNegativeInteger(row.end_line) || 1,
+    embedding: normalizeEmbeddingVector(parseJsonArrayOrEmpty(row.embedding_json)),
+    metadata,
   };
 }
 
@@ -1271,6 +1985,193 @@ async function embedMemoryDocuments(
   return embeddedDocuments;
 }
 
+async function indexLocalVectorCandidate({
+  candidate,
+  options,
+  maxBytesPerFile,
+}: {
+  candidate: CandidateFile;
+  options: NormalizedLocalVectorFileSearchOptions;
+  maxBytesPerFile: number;
+}): Promise<{ status: 'cached' | 'indexed' | 'skipped'; chunkCount: number }> {
+  const stat = await fs.stat(candidate.absolutePath).catch(() => null);
+  if (!stat || !stat.isFile() || stat.size > maxBytesPerFile) {
+    return { status: 'skipped', chunkCount: 0 };
+  }
+  const documentId = localVectorDocumentId(options.name, candidate);
+  const existingDocument = await options.indexStore.getDocument(documentId);
+  if (
+    existingDocument
+    && existingDocument.size === stat.size
+    && existingDocument.mtimeMs === stat.mtimeMs
+    && existingDocument.embeddingModel === options.embeddingProvider.model
+  ) {
+    return { status: 'cached', chunkCount: 0 };
+  }
+
+  const content = await fs.readFile(candidate.absolutePath, 'utf8').catch(() => null);
+  if (!content || looksBinary(content)) {
+    return { status: 'skipped', chunkCount: 0 };
+  }
+  const contentHash = stableContentHash(content);
+  const textChunks = chunkLocalVectorText(content, options.chunking);
+  if (textChunks.length === 0) {
+    return { status: 'skipped', chunkCount: 0 };
+  }
+  const embeddings = await embedTextsInBatches(
+    options.embeddingProvider,
+    textChunks.map((chunk) => [
+      candidate.relativePath,
+      chunk.text,
+    ].join('\n\n')),
+    options.embeddingBatchSize,
+  );
+  const filename = path.basename(candidate.relativePath) || candidate.relativePath;
+  const document: CodexProviderRelayLocalVectorIndexDocument = {
+    id: documentId,
+    sourceName: options.name,
+    root: candidate.root.path,
+    path: candidate.relativePath,
+    uri: pathToFileURL(candidate.absolutePath).toString(),
+    title: candidate.relativePath,
+    filename,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    contentHash,
+    embeddingModel: options.embeddingProvider.model,
+    updatedAt: new Date().toISOString(),
+  };
+  const chunks: CodexProviderRelayLocalVectorIndexChunk[] = [];
+  for (let index = 0; index < textChunks.length; index += 1) {
+    const embedding = normalizeEmbeddingVector(embeddings[index]);
+    if (embedding.length === 0) {
+      continue;
+    }
+    const textChunk = textChunks[index];
+    chunks.push({
+      id: stableFileSearchFileId(options.name, `${documentId}:${textChunk.chunkIndex}`),
+      documentId,
+      sourceName: options.name,
+      root: candidate.root.path,
+      path: candidate.relativePath,
+      uri: document.uri,
+      title: document.title,
+      filename,
+      text: textChunk.text,
+      chunkIndex: textChunk.chunkIndex,
+      startLine: textChunk.startLine,
+      endLine: textChunk.endLine,
+      embedding,
+      metadata: {
+        root: candidate.root.path,
+        path: candidate.relativePath,
+        filename,
+        content_hash: contentHash,
+        embedding_model: options.embeddingProvider.model,
+      },
+    });
+  }
+  if (chunks.length === 0) {
+    return { status: 'skipped', chunkCount: 0 };
+  }
+  await options.indexStore.upsertDocument(document, chunks);
+  return { status: 'indexed', chunkCount: chunks.length };
+}
+
+async function deleteStaleLocalVectorDocuments(
+  options: NormalizedLocalVectorFileSearchOptions,
+  candidates: CandidateFile[],
+): Promise<string[]> {
+  if (!options.indexStore.deleteDocuments) {
+    return [];
+  }
+  const candidateIds = new Set(candidates.map((candidate) => localVectorDocumentId(options.name, candidate)));
+  const chunks = await options.indexStore.listChunks(options.name);
+  const staleIds = [...new Set(chunks.map((chunk) => chunk.documentId))]
+    .filter((documentId) => !candidateIds.has(documentId));
+  if (staleIds.length > 0) {
+    await options.indexStore.deleteDocuments(staleIds);
+  }
+  return staleIds;
+}
+
+function localVectorDocumentId(sourceName: string, candidate: CandidateFile): string {
+  return stableFileSearchFileId(sourceName, `${candidate.root.path}:${candidate.relativePath}`);
+}
+
+function chunkLocalVectorText(
+  content: string,
+  options: NormalizedLocalVectorChunkingOptions,
+): LocalVectorTextChunk[] {
+  const lines = content.split(/\r?\n/u);
+  const chunks: LocalVectorTextChunk[] = [];
+  let lineIndex = 0;
+  while (lineIndex < lines.length && chunks.length < options.maxChunksPerFile) {
+    const previousStartIndex = lineIndex;
+    const startLine = lineIndex + 1;
+    const selectedLines: string[] = [];
+    let charCount = 0;
+    while (lineIndex < lines.length) {
+      const line = lines[lineIndex];
+      const nextLength = charCount + line.length + (selectedLines.length > 0 ? 1 : 0);
+      if (selectedLines.length > 0 && nextLength > options.maxChars) {
+        break;
+      }
+      selectedLines.push(line);
+      charCount = nextLength;
+      lineIndex += 1;
+      if (charCount >= options.maxChars) {
+        break;
+      }
+    }
+    if (selectedLines.length === 0) {
+      const line = lines[lineIndex] ?? '';
+      selectedLines.push(line.slice(0, options.maxChars));
+      lineIndex += 1;
+    }
+    const endLine = Math.max(startLine, lineIndex);
+    const text = selectedLines.join('\n').trim();
+    if (text) {
+      chunks.push({
+        text,
+        chunkIndex: chunks.length,
+        startLine,
+        endLine,
+      });
+    }
+    if (options.overlapChars > 0 && lineIndex < lines.length) {
+      const nextLineIndex = lineIndex;
+      let overlapChars = 0;
+      let overlapLineIndex = Math.max(0, lineIndex - 1);
+      while (overlapLineIndex > 0 && overlapChars < options.overlapChars) {
+        overlapChars += lines[overlapLineIndex].length + 1;
+        overlapLineIndex -= 1;
+      }
+      lineIndex = Math.max(overlapLineIndex + 1, previousStartIndex + 1);
+      if (lineIndex >= nextLineIndex) {
+        lineIndex = nextLineIndex;
+      }
+    }
+  }
+  return chunks;
+}
+
+async function embedTextsInBatches(
+  embeddingProvider: CodexProviderRelayEmbeddingProvider,
+  texts: string[],
+  batchSize: number,
+): Promise<number[][]> {
+  const embeddings: number[][] = [];
+  for (let index = 0; index < texts.length; index += batchSize) {
+    const batch = texts.slice(index, index + batchSize);
+    const result = await embeddingProvider.embed(batch);
+    for (const embedding of result.embeddings) {
+      embeddings.push(normalizeEmbeddingVector(embedding));
+    }
+  }
+  return embeddings;
+}
+
 function embeddingTextForMemoryDocument(document: NormalizedMemoryFileSearchDocument): string {
   return [
     document.title,
@@ -1327,6 +2228,34 @@ function parseJsonRecord(text: string, label: string): JsonRecord {
       throw error;
     }
     throw new Error(`${label} was not valid JSON: ${text.slice(0, 500)}`);
+  }
+}
+
+function parseJsonArrayOrEmpty(value: unknown): unknown[] {
+  const text = normalizeString(value);
+  if (!text) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseJsonRecordOrNull(value: unknown): JsonRecord | null {
+  const text = normalizeString(value);
+  if (!text) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as JsonRecord
+      : null;
+  } catch {
+    return null;
   }
 }
 
@@ -1495,6 +2424,14 @@ function normalizeSqlIdentifier(value: unknown, label: string): string {
     throw new Error(`${label} must be a safe SQL identifier.`);
   }
   return parts.map((part) => `"${part}"`).join('.');
+}
+
+function normalizeSqliteTablePrefix(value: unknown, fallback: string): string {
+  const raw = normalizeString(value) || fallback;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(raw)) {
+    throw new Error('sqlite local-vector tablePrefix must be a safe SQL identifier prefix.');
+  }
+  return raw;
 }
 
 function sqlAliasFromIdentifier(identifier: string): string {
@@ -2009,6 +2946,15 @@ function stableFileSearchFileId(sourceName: string, resultPath: string): string 
     hash = Math.imul(hash, 16777619);
   }
   return `file_${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function stableContentHash(content: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < content.length; index += 1) {
+    hash ^= content.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a_${(hash >>> 0).toString(16).padStart(8, '0')}_${Buffer.byteLength(content, 'utf8')}`;
 }
 
 function normalizeSourceType(source: CodexProviderRelayFileSearchSource): string {

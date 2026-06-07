@@ -1,18 +1,18 @@
 import {
-  CodexProviderRelayRuntime,
-  createCodexProviderRelayImageGenerationExecutor,
-  createCodexProviderRelayOpenAICompatibleImageGenerationProvider,
-} from '@codexbridge/codex-provider-relay';
+  CodexProviderRuntime,
+  createCodexProviderImageGenerationExecutor,
+  createCodexProviderOpenAICompatibleImageGenerationProvider,
+} from '@codex-provider/core';
 
-const imageGeneration = createCodexProviderRelayImageGenerationExecutor({
-  generate: createCodexProviderRelayOpenAICompatibleImageGenerationProvider({
+const imageGeneration = createCodexProviderImageGenerationExecutor({
+  generate: createCodexProviderOpenAICompatibleImageGenerationProvider({
     apiKey: mustGetEnv('IMAGE_API_KEY'),
     endpoint: process.env.IMAGE_API_ENDPOINT,
     model: process.env.IMAGE_MODEL,
   }),
 });
 
-const runtime = new CodexProviderRelayRuntime({
+const runtime = new CodexProviderRuntime({
   apiKey: mustGetEnv('OPENROUTER_API_KEY'),
   upstreamBaseUrl: 'https://openrouter.ai/api/v1',
   defaultModel: process.env.OPENROUTER_MODEL ?? 'deepseek/deepseek-chat',

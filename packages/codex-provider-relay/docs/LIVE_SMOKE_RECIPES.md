@@ -1,6 +1,8 @@
 # Live Smoke Recipes
 
-These recipes are for validating `@codexbridge/codex-provider-relay` against real upstream services before public packaging.
+These recipes are for validating `@codex-provider/core` against real upstream services before public packaging.
+
+Historical names under `@codexbridge/codex-provider-relay` and `codex-provider-relay-server` remain as deprecated aliases during the stabilization cycle.
 
 Live smoke tests are intentionally manual or opt-in. They require provider credentials, may call paid APIs, and should never run in ordinary unit test flows.
 
@@ -70,7 +72,7 @@ Use `examples/relay-emulated-image-generation.ts` as the wiring reference.
 
 Expected:
 
-- No image provider is active unless `createCodexProviderRelayImageGenerationExecutor()` is registered.
+- No image provider is active unless `createCodexProviderImageGenerationExecutor()` is registered.
 - The provider receives prompt/options.
 - Optional `include: ["image_generation_call.results"]` exposes `image_generation_call` output.
 

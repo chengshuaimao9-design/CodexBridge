@@ -1,9 +1,9 @@
 {
-  "name": "@codexbridge/codex-provider-relay",
-  "version": "0.0.0",
+  "name": "@codex-provider/core",
+  "version": "0.1.0-alpha.0",
   "private": true,
   "type": "module",
-  "description": "Reusable relay SDK that lets non-OpenAI models participate in the Codex native tool-call loop.",
+  "description": "Provider compatibility SDK that lets non-OpenAI models participate in the Codex native tool-call loop.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -12,6 +12,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
+    "codex-provider-server": "./dist/cli.js",
     "codex-provider-relay-server": "./dist/cli.js",
     "codex-gateway-server": "./dist/cli.js"
   },

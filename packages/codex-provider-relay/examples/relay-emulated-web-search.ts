@@ -1,15 +1,15 @@
 import {
-  CodexProviderRelayRuntime,
-  createCodexProviderRelayWebSearchExecutor,
-} from '@codexbridge/codex-provider-relay';
+  CodexProviderRuntime,
+  createCodexProviderWebSearchExecutor,
+} from '@codex-provider/core';
 
-const webSearch = createCodexProviderRelayWebSearchExecutor({
+const webSearch = createCodexProviderWebSearchExecutor({
   provider: 'tavily',
   apiKey: mustGetEnv('TAVILY_API_KEY'),
   maxResults: 5,
 });
 
-const runtime = new CodexProviderRelayRuntime({
+const runtime = new CodexProviderRuntime({
   apiKey: mustGetEnv('OPENROUTER_API_KEY'),
   upstreamBaseUrl: 'https://openrouter.ai/api/v1',
   defaultModel: process.env.OPENROUTER_MODEL ?? 'deepseek/deepseek-chat',

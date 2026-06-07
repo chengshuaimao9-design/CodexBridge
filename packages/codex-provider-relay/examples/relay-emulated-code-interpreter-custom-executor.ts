@@ -1,9 +1,9 @@
 import {
-  CodexProviderRelayRuntime,
-  createCodexProviderRelayCodeInterpreterExecutor,
-} from '@codexbridge/codex-provider-relay';
+  CodexProviderRuntime,
+  createCodexProviderCodeInterpreterExecutor,
+} from '@codex-provider/core';
 
-const codeInterpreter = createCodexProviderRelayCodeInterpreterExecutor({
+const codeInterpreter = createCodexProviderCodeInterpreterExecutor({
   async execute(request) {
     await request.emitStdout('custom sandbox received code\n');
     return {
@@ -19,7 +19,7 @@ const codeInterpreter = createCodexProviderRelayCodeInterpreterExecutor({
   },
 });
 
-const runtime = new CodexProviderRelayRuntime({
+const runtime = new CodexProviderRuntime({
   apiKey: mustGetEnv('OPENROUTER_API_KEY'),
   upstreamBaseUrl: 'https://openrouter.ai/api/v1',
   defaultModel: process.env.OPENROUTER_MODEL ?? 'deepseek/deepseek-chat',

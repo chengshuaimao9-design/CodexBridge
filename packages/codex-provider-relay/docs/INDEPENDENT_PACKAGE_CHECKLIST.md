@@ -1,6 +1,6 @@
 # Independent Package Checklist
 
-`@codexbridge/codex-provider-relay` remains internal-only until this checklist is complete.
+`@codex-provider/core` remains internal-only until this checklist is complete.
 
 ## Release Gate
 
@@ -8,6 +8,9 @@
 - [x] Root `exports` exposes only the stable root entrypoint and `./package.json`.
 - [x] Historical `CodexGateway*` server/trace names remain available as deprecated aliases.
 - [x] Formal `CodexProviderRelay*` server/trace names are exported from the root entrypoint.
+- [x] Formal `CodexProvider*` public API aliases are exported from the root entrypoint.
+- [x] Package metadata uses `@codex-provider/core` and `0.1.0-alpha.0` while retaining `private: true`.
+- [x] New `codex-provider:*` root scripts exist and legacy `codex-provider-relay:*` scripts remain.
 - [x] Built-in hosted tools require explicit declarations.
 - [x] Relay-emulated hosted tools require explicit executors.
 - [x] Unsafe tools have no default executor.
@@ -17,7 +20,8 @@
 - [x] Unsafe tool security notes exist for code interpreter, computer, shell, and apply-patch boundaries.
 - [x] Draft release readiness policy exists.
 - [ ] Live smoke recipes are executed and recorded against real upstream providers.
-- [ ] Package scope, product name, versioning policy, changelog policy, and npm release workflow are decided.
+- [ ] Live consumer validation is completed through CodexNext or a standalone app-server harness.
+- [ ] Changelog policy and npm release workflow are decided.
 
 ## Consumer Boundary
 
@@ -48,4 +52,4 @@ Deprecated names must stay as type/function aliases for at least one stabilizati
 
 ## Current Blocker
 
-The final public package name is intentionally not locked here. Until that decision is made, keep `private: true`, keep `version: "0.0.0"`, and avoid adding new public subpath exports.
+The public package name is now `@codex-provider/core`, but the package remains internal-only. Keep `private: true`, keep `version: "0.1.0-alpha.0"`, and avoid adding new public subpath exports until live smoke and external consumer validation are complete.

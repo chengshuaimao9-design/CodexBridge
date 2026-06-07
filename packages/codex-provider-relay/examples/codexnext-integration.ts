@@ -1,7 +1,7 @@
 import {
-  CodexProviderRelayRuntime,
-  type CodexProviderRelayRuntimeState,
-} from '@codexbridge/codex-provider-relay';
+  CodexProviderRuntime,
+  type CodexProviderRuntimeState,
+} from '@codex-provider/core';
 
 export interface CodexNextRelayOptions {
   apiKey: string;
@@ -14,8 +14,8 @@ export interface CodexNextRelayOptions {
 
 export async function startCodexNextRelay(
   options: CodexNextRelayOptions,
-): Promise<CodexProviderRelayRuntimeState> {
-  const runtime = new CodexProviderRelayRuntime({
+): Promise<CodexProviderRuntimeState> {
+  const runtime = new CodexProviderRuntime({
     apiKey: options.apiKey,
     upstreamBaseUrl: options.upstreamBaseUrl,
     defaultModel: options.model,

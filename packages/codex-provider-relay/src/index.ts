@@ -1,5 +1,6 @@
 export * from './codex_config.js';
 export * from './builtin-tools/index.js';
+export * from './codex_provider_aliases.js';
 export * from './code_interpreter_executor.js';
 export * from './computer_executor.js';
 export * from './file_search_executor.js';

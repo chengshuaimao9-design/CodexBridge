@@ -1,17 +1,17 @@
 import {
-  CodexProviderRelayRuntime,
-  createCodexProviderRelayEmbeddingsApiProvider,
-  createCodexProviderRelayFileSearchExecutor,
-} from '@codexbridge/codex-provider-relay';
+  CodexProviderRuntime,
+  createCodexProviderEmbeddingsApiProvider,
+  createCodexProviderFileSearchExecutor,
+} from '@codex-provider/core';
 
 const workspaceRoot = process.env.WORKSPACE_ROOT ?? process.cwd();
-const embeddings = createCodexProviderRelayEmbeddingsApiProvider({
+const embeddings = createCodexProviderEmbeddingsApiProvider({
   apiKey: mustGetEnv('EMBEDDINGS_API_KEY'),
   endpoint: process.env.EMBEDDINGS_API_ENDPOINT,
   model: process.env.EMBEDDINGS_MODEL,
 });
 
-const fileSearch = createCodexProviderRelayFileSearchExecutor({
+const fileSearch = createCodexProviderFileSearchExecutor({
   sources: [{
     type: 'local-vector',
     name: 'workspace-local-vector',
@@ -24,7 +24,7 @@ const fileSearch = createCodexProviderRelayFileSearchExecutor({
   maxPayloadBytes: 48_000,
 });
 
-const runtime = new CodexProviderRelayRuntime({
+const runtime = new CodexProviderRuntime({
   apiKey: mustGetEnv('OPENROUTER_API_KEY'),
   upstreamBaseUrl: 'https://openrouter.ai/api/v1',
   defaultModel: process.env.OPENROUTER_MODEL ?? 'deepseek/deepseek-chat',

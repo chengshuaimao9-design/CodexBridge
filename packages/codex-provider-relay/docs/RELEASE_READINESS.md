@@ -4,8 +4,8 @@ This package is still internal-only.
 
 ```json
 {
-  "name": "@codexbridge/codex-provider-relay",
-  "version": "0.0.0",
+  "name": "@codex-provider/core",
+  "version": "0.1.0-alpha.0",
   "private": true
 }
 ```
@@ -15,28 +15,20 @@ This package is still internal-only.
 - Keep `private: true`.
 - Keep root `exports` limited to `.` and `./package.json`.
 - Keep `CodexGateway*` aliases as deprecated compatibility names.
-- Prefer `CodexProviderRelay*` names for new consumers until the product/package naming decision is finalized.
+- Prefer `CodexProvider*` names for new consumers.
+- Keep `CodexProviderRelay*` aliases as deprecated compatibility names during the stabilization cycle.
 - Do not introduce subpath exports until the root API is stable.
 
 ## Open Decisions
 
-- Final package name and npm scope.
-- First public version.
+- Public release version after alpha.
 - Changelog format.
 - Release automation.
 - Whether examples are shipped in the npm tarball or only kept in the repository.
 
 ## Recommended Version Strategy
 
-Before the package name is finalized:
-
-- Stay at `0.0.0`.
-- Treat all APIs as internal.
-- Use commits and docs as the migration record.
-
-After the name is finalized:
-
-- Move to `0.1.0` for the first internal pre-release.
+- Stay at `0.1.0-alpha.0` while `private: true`.
 - Add `CHANGELOG.md`.
 - Add a package export audit test for every stable root export.
 - Run live smoke recipes and record redacted results.
@@ -58,6 +50,10 @@ If the package directory does not have its own `node_modules`, use the workspace
 Also run from the repository root:
 
 ```bash
+npm run codex-provider:test
+npm run codex-provider:typecheck
+npm run codex-provider:build
+npm run codex-provider:check-boundary
 npm run codex-provider-relay:check-boundary
 git diff --check
 ```

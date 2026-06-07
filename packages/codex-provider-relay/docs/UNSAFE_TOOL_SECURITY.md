@@ -1,6 +1,8 @@
 # Unsafe Tool Security
 
-`@codexbridge/codex-provider-relay` defines contracts for unsafe tools but must not become the default executor for dangerous actions.
+`@codex-provider/core` defines contracts for unsafe tools but must not become the default executor for dangerous actions.
+
+Historical names under `@codexbridge/codex-provider-relay` and `CodexProviderRelay*` remain as deprecated aliases during the stabilization cycle.
 
 ## Default Policy
 

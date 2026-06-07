@@ -1,13 +1,15 @@
-# Codex Provider Relay Recipes
+# CodexProvider Recipes
 
-These recipes describe how a host app should wire the relay without depending on CodexBridge internals.
+These recipes describe how a host app should wire `@codex-provider/core` without depending on CodexBridge internals.
+
+Historical names under `@codexbridge/codex-provider-relay` and `CodexProviderRelay*` remain as deprecated aliases during the stabilization cycle.
 
 ## Mixed OpenRouter Runtime
 
 Use `profileMode: "mixed"` when Codex should talk to a local Responses adapter while the relay calls an upstream Chat Completions API.
 
 ```ts
-const runtime = new CodexProviderRelayRuntime({
+const runtime = new CodexProviderRuntime({
   apiKey: process.env.OPENROUTER_API_KEY!,
   upstreamBaseUrl: "https://openrouter.ai/api/v1",
   defaultModel: "deepseek/deepseek-chat",
@@ -24,7 +26,7 @@ Relay-emulated tools must be declared and registered.
 ```ts
 hostedTools: [{ name: "web_search", mode: "relay-emulated" }],
 hostedToolExecutors: {
-  web_search: createCodexProviderRelayWebSearchExecutor({
+  web_search: createCodexProviderWebSearchExecutor({
     provider: "tavily",
     apiKey: process.env.TAVILY_API_KEY!,
   }),
@@ -38,11 +40,11 @@ The relay then exposes a function tool to Chat Completions upstreams, executes t
 Use explicit roots and an explicit embedding provider.
 
 ```ts
-const fileSearch = createCodexProviderRelayFileSearchExecutor({
+const fileSearch = createCodexProviderFileSearchExecutor({
   sources: [{
     type: "local-vector",
     roots: [workspaceRoot],
-    embeddingProvider: createCodexProviderRelayEmbeddingsApiProvider({
+    embeddingProvider: createCodexProviderEmbeddingsApiProvider({
       apiKey: process.env.EMBEDDINGS_API_KEY,
       endpoint: process.env.EMBEDDINGS_API_ENDPOINT,
       model: process.env.EMBEDDINGS_MODEL,
@@ -66,7 +68,7 @@ CODEX_PROVIDER_RELAY_CAPABILITY_PRESET=openrouter
 CODEX_PROVIDER_RELAY_API_KEY=...
 CODEX_PROVIDER_RELAY_MODEL=deepseek/deepseek-chat
 CODEX_PROVIDER_RELAY_TRACE=stderr-json
-codex-provider-relay-server
+codex-provider-server
 ```
 
 Legacy `CODEX_GATEWAY_*` variables remain supported for compatibility.

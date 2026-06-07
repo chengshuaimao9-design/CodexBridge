@@ -1,8 +1,8 @@
 import {
-  CodexProviderRelayRuntime,
-} from '@codexbridge/codex-provider-relay';
+  CodexProviderRuntime,
+} from '@codex-provider/core';
 
-const runtime = new CodexProviderRelayRuntime({
+const runtime = new CodexProviderRuntime({
   apiKey: mustGetEnv('OPENROUTER_API_KEY'),
   upstreamBaseUrl: 'https://openrouter.ai/api/v1',
   defaultModel: process.env.OPENROUTER_MODEL ?? 'deepseek/deepseek-chat',

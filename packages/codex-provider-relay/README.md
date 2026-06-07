@@ -1,6 +1,8 @@
-# Codex Provider Relay
+# CodexProvider
 
-`@codexbridge/codex-provider-relay` is the reusable relay SDK for Codex app-server integrations, including CodexBridge, CodexNext, and future host apps.
+`@codex-provider/core` is a provider compatibility SDK for Codex app-server integrations. It lets non-OpenAI models participate in the Codex native tool-call loop by exposing a Responses-compatible surface over provider-specific Chat Completions APIs.
+
+Historical names under `@codexbridge/codex-provider-relay`, `CodexProviderRelay*`, and `CodexGateway*` remain as deprecated aliases during the stabilization cycle.
 
 ## Fixed Goal
 
@@ -11,7 +13,7 @@ This package exists so DeepSeek, OpenRouter, Claude-compatible relays, and other
 ```text
 Codex app-server
   -> Responses API request and SSE events
-  -> codex-provider-relay
+  -> CodexProvider
   -> upstream provider API
   -> translated Responses events
   -> Codex local tool execution and continuation
@@ -44,17 +46,17 @@ This package currently defines the fixed target, tool strategy types, protocol-a
 
 For `responses` upstreams, Codex provider `base_url` points at the upstream Responses endpoint. For `chat-completions` upstreams, Codex provider `base_url` points at this package's local Responses proxy, while the third-party Chat Completions endpoint remains relay-owned configuration. This is required so the Codex native tool-call loop passes through conversion instead of bypassing it.
 
-`CodexProviderRelayRuntime` starts and stops the built-in local Responses adapter server by default, exposes the local `baseUrl`, and returns Codex app-server launch config. Advanced hosts can still override `adapterServerFactory`, but CodexBridge, CodexNext, or any future app-server project no longer needs a second package to start the relay lifecycle.
+`CodexProviderRuntime` starts and stops the built-in local Responses adapter server by default, exposes the local `baseUrl`, and returns Codex app-server launch config. Advanced hosts can still override `adapterServerFactory`, but CodexBridge, CodexNext, or any future app-server project no longer needs a second package to start the relay lifecycle.
 
 Relay-emulated hosted tools now have a package-level executor registry. When a host declares `web_search` or `file_search` as `relay-emulated` and registers a matching executor, the local adapter exposes that capability to Chat Completions upstreams as a function tool, executes the returned tool call inside the relay, appends the tool output, and continues the upstream model loop before returning a Codex-compatible Responses result. Streaming clients keep a real streaming path: the relay consumes internal streamed tool-call deltas, runs the executor, then forwards the follow-up upstream answer stream through the existing Responses SSE translator.
 
 Hosts that need UI observability can enable `emitHostedToolSseEvents`. This opt-in stream emits `hosted_tool.started`, `hosted_tool.delta`, `hosted_tool.completed`, and `hosted_tool.failed` before the normal Responses SSE events. The default stays off so Codex-compatible clients are not forced to accept non-standard event names.
 
-Hosts can bring their own executor or use the built-in `createCodexProviderRelayWebSearchExecutor` factory for Tavily, Brave Search, or Serper. The SDK only accepts keys through runtime options; it does not load or store provider secrets.
+Hosts can bring their own executor or use the built-in `createCodexProviderWebSearchExecutor` factory for Tavily, Brave Search, or Serper. The SDK only accepts keys through runtime options; it does not load or store provider secrets.
 
-The built-in `createCodexProviderRelayFileSearchExecutor` now accepts a generic `sources` list while preserving `roots` as a local-filesystem shortcut. The local filesystem source never scans the process working directory implicitly, skips common dependency/build/binary paths by default, avoids following symlinks unless enabled, rejects unsafe `path_glob` traversal, and bounds scanned files, bytes per file, total payload bytes, OpenAI-compatible chunk content, and result count. The memory-documents source lets hosts expose in-memory project notes, summaries, or session records through the same contract without binding the relay to a host app store. The SQLite FTS source accepts an injected `database.all(sql, params)` or custom `query()` function, so hosts can connect persistent FTS indexes without adding a sqlite driver dependency to this package.
+The built-in `createCodexProviderFileSearchExecutor` now accepts a generic `sources` list while preserving `roots` as a local-filesystem shortcut. The local filesystem source never scans the process working directory implicitly, skips common dependency/build/binary paths by default, avoids following symlinks unless enabled, rejects unsafe `path_glob` traversal, and bounds scanned files, bytes per file, total payload bytes, OpenAI-compatible chunk content, and result count. The memory-documents source lets hosts expose in-memory project notes, summaries, or session records through the same contract without binding the relay to a host app store. The SQLite FTS source accepts an injected `database.all(sql, params)` or custom `query()` function, so hosts can connect persistent FTS indexes without adding a sqlite driver dependency to this package.
 
-Semantic `file_search` is now available through the generic `CodexProviderRelayEmbeddingProvider` interface, `createCodexProviderRelayInMemoryVectorFileSearchSource()`, and `createCodexProviderRelayLocalVectorFileSearchSource()`. The local-vector source scans explicit roots with the same local-fs safety boundary, chunks files, embeds chunks, caches document/chunk embeddings in a pluggable `CodexProviderRelayLocalVectorIndexStore`, and uses hybrid vector/lexical scoring at query time. `createCodexProviderRelayMemoryLocalVectorIndexStore()` provides an in-memory store, and `createCodexProviderRelaySqliteLocalVectorIndexStore()` provides a persistent SQLite store through host-injected `database.all/run` methods without adding a sqlite driver dependency. `createCodexProviderRelayEmbeddingsApiProvider()` targets OpenAI-compatible embeddings APIs with host-provided endpoint, model, headers, and API key. The default endpoint/model currently points at OpenRouter's Qwen embedding API only as a convenient starter configuration, and `createCodexProviderRelayOpenRouterEmbeddingProvider()` remains a thin convenience wrapper over the generic provider.
+Semantic `file_search` is now available through the generic `CodexProviderEmbeddingProvider` interface, `createCodexProviderInMemoryVectorFileSearchSource()`, and `createCodexProviderLocalVectorFileSearchSource()`. The local-vector source scans explicit roots with the same local-fs safety boundary, chunks files, embeds chunks, caches document/chunk embeddings in a pluggable `CodexProviderLocalVectorIndexStore`, and uses hybrid vector/lexical scoring at query time. `createCodexProviderMemoryLocalVectorIndexStore()` provides an in-memory store, and `createCodexProviderSqliteLocalVectorIndexStore()` provides a persistent SQLite store through host-injected `database.all/run` methods without adding a sqlite driver dependency. `createCodexProviderEmbeddingsApiProvider()` targets OpenAI-compatible embeddings APIs with host-provided endpoint, model, headers, and API key. The default endpoint/model currently points at OpenRouter's Qwen embedding API only as a convenient starter configuration, and `createCodexProviderOpenRouterEmbeddingProvider()` remains a thin convenience wrapper over the generic provider.
 
 The profile surface exposes the safe presets app-servers should use:
 

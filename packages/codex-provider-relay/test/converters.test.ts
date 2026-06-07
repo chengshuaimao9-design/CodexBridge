@@ -89,6 +89,10 @@ test('responses conversion exposes relay-emulated file_search as a Chat function
   assert.equal(chat.tools[0].function.name, 'relay_file_search');
   assert.equal(chat.tools[0].function.parameters.required[0], 'query');
   assert.equal(chat.tools[0].function.parameters.properties.path_glob.type, 'string');
+  assert.equal(chat.tools[0].function.parameters.properties.max_num_results.type, 'integer');
+  assert.equal(chat.tools[0].function.parameters.properties.vector_store_ids.type, 'array');
+  assert.equal(chat.tools[0].function.parameters.properties.filters.type, 'object');
+  assert.equal(chat.tools[0].function.parameters.properties.ranking_options.type, 'object');
   assert.deepEqual(chat.tool_choice, {
     type: 'function',
     function: {

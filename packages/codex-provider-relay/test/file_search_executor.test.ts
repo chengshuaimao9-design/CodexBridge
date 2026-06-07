@@ -4,9 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
+  createCodexProviderRelayEmbeddingsApiProvider,
   createCodexProviderRelayFileSearchExecutor,
+  createCodexProviderRelayInMemoryVectorFileSearchSource,
   createCodexProviderRelayMemoryFileSearchSource,
+  createCodexProviderRelayOpenRouterEmbeddingProvider,
   createCodexProviderRelaySqliteFtsFileSearchSource,
+  type CodexProviderRelayEmbeddingProvider,
   type CodexProviderRelayFileSearchExecutorContent,
   type CodexProviderRelayFileSearchSource,
 } from '../src/index.js';
@@ -22,7 +26,7 @@ async function createTempWorkspace(): Promise<string> {
   ].join('\n'));
   await fs.writeFile(path.join(root, 'src', 'notes.md'), [
     '# Notes',
-    'The bridge supports hosted file search snippets.',
+    'The bridge supports hosted file search chunks.',
   ].join('\n'));
   await fs.writeFile(path.join(root, 'node_modules', 'ignored', 'ignored.ts'), 'file search target in ignored dependency');
   await fs.writeFile(path.join(root, 'image.png'), '\0not text');
@@ -42,7 +46,26 @@ function baseRequest(argumentsValue: Record<string, any>) {
   };
 }
 
-test('local file_search executor returns snippets from explicit roots only', async () => {
+function createKeywordEmbeddingProvider(keywords: string[]): CodexProviderRelayEmbeddingProvider {
+  return {
+    model: 'test-keyword-embedding',
+    embed(input) {
+      return {
+        model: 'test-keyword-embedding',
+        dimensions: keywords.length,
+        embeddings: input.map((text) => {
+          const lower = text.toLowerCase();
+          return keywords.map((keyword) => {
+            const matches = lower.match(new RegExp(keyword, 'gu'));
+            return matches?.length ?? 0;
+          });
+        }),
+      };
+    },
+  };
+}
+
+test('local file_search executor returns OpenAI-style chunks from explicit roots only', async () => {
   const root = await createTempWorkspace();
   const deltas: any[] = [];
   const executor = createCodexProviderRelayFileSearchExecutor({
@@ -64,15 +87,16 @@ test('local file_search executor returns snippets from explicit roots only', asy
 
   assert.equal(content.provider, 'local-fs');
   assert.equal(content.query, 'Codex relay target');
-  assert.equal(content.results.length, 1);
-  assert.equal(content.results[0].path, 'src/agent.ts');
-  assert.match(content.results[0].snippets.map((snippet) => snippet.text).join('\n'), /file search target/u);
-  assert.equal(content.results.some((entry) => entry.path.includes('node_modules')), false);
+  assert.equal('results' in (content as any), false);
+  assert.equal(content.data.length, 1);
+  assert.equal(content.data[0].attributes.path, 'src/agent.ts');
+  assert.match(content.data[0].content.map((chunk) => chunk.text).join('\n'), /file search target/u);
+  assert.equal(content.data.some((entry) => String(entry.attributes.path).includes('node_modules')), false);
   assert.equal(deltas.some((entry) => entry.delta === 'scanning roots'), true);
   assert.equal(deltas.some((entry) => entry.delta === 'file matched'), true);
 });
 
-test('local file_search executor can omit snippet content', async () => {
+test('local file_search executor can omit chunk content', async () => {
   const root = await createTempWorkspace();
   const executor = createCodexProviderRelayFileSearchExecutor({
     roots: [root],
@@ -85,8 +109,8 @@ test('local file_search executor can omit snippet content', async () => {
   }));
   const content = result.content as CodexProviderRelayFileSearchExecutorContent;
 
-  assert.ok(content.results.length >= 1);
-  assert.equal(content.results.every((result) => result.snippets.length === 0), true);
+  assert.ok(content.data.length >= 1);
+  assert.equal(content.data.every((result) => result.content.length === 0), true);
 });
 
 test('file_search executor aggregates explicit sources without host coupling', async () => {
@@ -126,13 +150,132 @@ test('file_search executor aggregates explicit sources without host coupling', a
 
   assert.equal(content.provider, 'multi-source');
   assert.equal(content.sourceCount, 2);
-  assert.equal(content.results[0].source, 'memory-documents');
-  assert.equal(content.results.some((entry) => entry.source === 'workspace'), true);
+  assert.equal(content.data[0].attributes.source, 'memory-documents');
+  assert.equal(content.data.some((entry) => entry.attributes.source === 'workspace'), true);
   assert.equal(deltas.some((entry) => entry.delta === 'searching source'), true);
   assert.equal(deltas.some((entry) => entry.delta === 'memory document matched'), true);
 });
 
-test('memory file_search source searches title and content with optional snippets', async () => {
+test('file_search executor emits OpenAI-compatible search result data', async () => {
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayMemoryFileSearchSource({
+        name: 'knowledge-base',
+        documents: [{
+          id: 'doc-1',
+          title: 'Hosted search guide',
+          path: 'docs/hosted-search.md',
+          content: 'Hosted file search returns OpenAI-compatible chunk data.',
+          metadata: {
+            category: 'docs',
+          },
+        }, {
+          id: 'doc-2',
+          title: 'Second hosted search guide',
+          path: 'docs/second.md',
+          content: 'Hosted file search has another matching document.',
+          metadata: {
+            category: 'docs',
+          },
+        }],
+      }),
+    ],
+    maxResults: 5,
+  });
+
+  const result = await executor(baseRequest({
+    query: 'hosted file search',
+    max_num_results: 1,
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.equal(content.object, 'vector_store.search_results.page');
+  assert.equal(content.search_query, 'hosted file search');
+  assert.equal('results' in (content as any), false);
+  assert.equal(content.data.length, 1);
+  assert.equal(content.search_results.length, 1);
+  assert.ok(content.data[0].file_id.startsWith('file_'));
+  assert.equal(content.data[0].filename, 'hosted-search.md');
+  assert.equal(content.data[0].attributes.category, 'docs');
+  assert.equal(content.data[0].content[0].type, 'text');
+  assert.match(content.data[0].content[0].text, /OpenAI-compatible/u);
+  assert.ok(content.data[0].score > 0);
+  assert.ok(content.data[0].score <= 1);
+});
+
+test('file_search executor applies vector store ids, filters, and ranking threshold', async () => {
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayMemoryFileSearchSource({
+        name: 'store-a',
+        documents: [{
+          id: 'strong',
+          title: 'Alpha beta guide',
+          path: 'docs/strong.md',
+          content: 'alpha beta alpha beta',
+          metadata: {
+            category: 'docs',
+            version: 2,
+          },
+        }, {
+          id: 'weak',
+          title: 'Alpha note',
+          path: 'docs/weak.md',
+          content: 'alpha only',
+          metadata: {
+            category: 'docs',
+            version: 1,
+          },
+        }],
+      }),
+      createCodexProviderRelayMemoryFileSearchSource({
+        name: 'store-b',
+        documents: [{
+          id: 'other',
+          title: 'Alpha beta external',
+          path: 'external/other.md',
+          content: 'alpha beta alpha beta should be ignored by vector_store_ids.',
+          metadata: {
+            category: 'docs',
+            version: 2,
+          },
+        }],
+      }),
+    ],
+  });
+
+  const result = await executor(baseRequest({
+    query: 'alpha beta',
+    vector_store_ids: ['store-a'],
+    filters: {
+      type: 'and',
+      filters: [
+        { type: 'eq', key: 'category', value: 'docs' },
+        { type: 'gte', key: 'version', value: 2 },
+      ],
+    },
+    ranking_options: {
+      ranker: 'auto',
+      score_threshold: 0.75,
+      hybrid_search: {
+        embedding_weight: 0.7,
+        text_weight: 0.3,
+      },
+    },
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.equal(content.sourceCount, 1);
+  assert.deepEqual(content.vector_store_ids, ['store-a']);
+  assert.equal(content.ranking_options.scoreThreshold, 0.75);
+  assert.equal(content.ranking_options.hybridSearch?.embeddingWeight, 0.7);
+  assert.equal(content.data.length, 1);
+  assert.equal(content.data[0].attributes.path, 'docs/strong.md');
+  assert.equal(content.data[0].filename, 'strong.md');
+  assert.equal(content.data.some((entry) => entry.filename === 'other.md'), false);
+});
+
+test('memory file_search source searches title and content with optional chunks', async () => {
   const executor = createCodexProviderRelayFileSearchExecutor({
     sources: [
       createCodexProviderRelayMemoryFileSearchSource({
@@ -163,13 +306,13 @@ test('memory file_search source searches title and content with optional snippet
   const content = result.content as CodexProviderRelayFileSearchExecutorContent;
 
   assert.equal(content.provider, 'memory-documents');
-  assert.equal(content.results.length, 1);
-  assert.equal(content.results[0].path, 'summaries/session.md');
-  assert.equal(content.results[0].sourceType, 'memory-documents');
-  assert.match(content.results[0].snippets.map((snippet) => snippet.text).join('\n'), /project summaries/u);
+  assert.equal(content.data.length, 1);
+  assert.equal(content.data[0].attributes.path, 'summaries/session.md');
+  assert.equal(content.data[0].attributes.source_type, 'memory-documents');
+  assert.match(content.data[0].content.map((chunk) => chunk.text).join('\n'), /project summaries/u);
 });
 
-test('memory file_search source can omit snippets', async () => {
+test('memory file_search source can omit chunks', async () => {
   const executor = createCodexProviderRelayFileSearchExecutor({
     sources: [
       createCodexProviderRelayMemoryFileSearchSource({
@@ -177,7 +320,7 @@ test('memory file_search source can omit snippets', async () => {
         documents: [{
           id: 'doc-1',
           title: 'Hosted search',
-          content: 'Hosted file search should match without returning snippets.',
+          content: 'Hosted file search should match without returning chunks.',
         }],
       }),
     ],
@@ -188,8 +331,8 @@ test('memory file_search source can omit snippets', async () => {
   }));
   const content = result.content as CodexProviderRelayFileSearchExecutorContent;
 
-  assert.equal(content.results.length, 1);
-  assert.equal(content.results[0].snippets.length, 0);
+  assert.equal(content.data.length, 1);
+  assert.equal(content.data[0].content.length, 0);
 });
 
 test('sqlite fts file_search source queries injected database and normalizes rows', async () => {
@@ -233,11 +376,11 @@ test('sqlite fts file_search source queries injected database and normalizes row
   const content = result.content as CodexProviderRelayFileSearchExecutorContent;
 
   assert.equal(content.provider, 'sqlite-fts');
-  assert.equal(content.results.length, 1);
-  assert.equal(content.results[0].source, 'project-index');
-  assert.equal(content.results[0].sourceType, 'sqlite-fts');
-  assert.equal(content.results[0].path, 'docs/sqlite.md');
-  assert.ok(content.results[0].score > 42);
+  assert.equal(content.data.length, 1);
+  assert.equal(content.data[0].attributes.source, 'project-index');
+  assert.equal(content.data[0].attributes.source_type, 'sqlite-fts');
+  assert.equal(content.data[0].attributes.path, 'docs/sqlite.md');
+  assert.ok(content.data[0].score > 0);
   assert.equal(executed.length, 1);
   assert.match(executed[0].sql, /FROM "documents_fts"/u);
   assert.match(executed[0].sql, /"documents_fts" MATCH \?/u);
@@ -258,7 +401,7 @@ test('sqlite fts file_search source supports includeContent false and custom que
             id: 'doc-1',
             title: 'Hosted SQLite',
             path: 'docs/hosted-sqlite.md',
-            content: 'Hosted SQLite file search returns no snippets when disabled.',
+            content: 'Hosted SQLite file search returns no chunks when disabled.',
             score: 10,
           }];
         },
@@ -271,8 +414,164 @@ test('sqlite fts file_search source supports includeContent false and custom que
   }));
   const content = result.content as CodexProviderRelayFileSearchExecutorContent;
 
-  assert.equal(content.results.length, 1);
-  assert.equal(content.results[0].snippets.length, 0);
+  assert.equal(content.data.length, 1);
+  assert.equal(content.data[0].content.length, 0);
+});
+
+test('in-memory vector file_search source ranks by embedding similarity', async () => {
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayInMemoryVectorFileSearchSource({
+        name: 'vector-docs',
+        embeddingProvider: createKeywordEmbeddingProvider(['payment', 'invoice', 'recipe']),
+        documents: [{
+          id: 'invoice',
+          title: 'Invoice payment runbook',
+          path: 'finance/invoice.md',
+          content: 'payment invoice invoice reconciliation',
+          metadata: {
+            category: 'finance',
+          },
+        }, {
+          id: 'recipe',
+          title: 'Cooking recipe',
+          path: 'food/recipe.md',
+          content: 'recipe tomato pasta',
+          metadata: {
+            category: 'food',
+          },
+        }],
+      }),
+    ],
+  });
+
+  const result = await executor(baseRequest({
+    query: 'payment invoice',
+    vector_store_ids: ['vector-docs'],
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.equal(content.provider, 'in-memory-vector');
+  assert.equal(content.data.length, 1);
+  assert.equal(content.data[0].filename, 'invoice.md');
+  assert.equal(content.data[0].attributes.source_type, 'in-memory-vector');
+  assert.equal(content.data[0].attributes.embedding_model, 'test-keyword-embedding');
+  assert.equal(content.data[0].attributes.category, 'finance');
+  assert.match(content.data[0].content.map((chunk) => chunk.text).join('\n'), /payment invoice/u);
+});
+
+test('in-memory vector source honors hybrid_search weights', async () => {
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayInMemoryVectorFileSearchSource({
+        name: 'hybrid-docs',
+        embeddingProvider: createKeywordEmbeddingProvider(['semantic']),
+        vectorWeight: 1,
+        textWeight: 0,
+        documents: [{
+          id: 'semantic',
+          title: 'Semantic target',
+          path: 'docs/semantic.md',
+          content: 'semantic semantic semantic',
+        }, {
+          id: 'lexical',
+          title: 'Lexical target',
+          path: 'docs/lexical.md',
+          content: 'queryterm queryterm queryterm queryterm queryterm',
+        }],
+      }),
+    ],
+    maxResults: 2,
+  });
+
+  const vectorOnly = await executor(baseRequest({
+    query: 'semantic queryterm',
+    ranking_options: {
+      hybrid_search: {
+        embedding_weight: 1,
+        text_weight: 0,
+      },
+    },
+  }));
+  const textOnly = await executor(baseRequest({
+    query: 'semantic queryterm',
+    ranking_options: {
+      hybrid_search: {
+        embedding_weight: 0,
+        text_weight: 1,
+      },
+    },
+  }));
+
+  const vectorContent = vectorOnly.content as CodexProviderRelayFileSearchExecutorContent;
+  const textContent = textOnly.content as CodexProviderRelayFileSearchExecutorContent;
+  assert.equal(vectorContent.data[0].filename, 'semantic.md');
+  assert.equal(textContent.data[0].filename, 'lexical.md');
+});
+
+test('embeddings API provider posts OpenAI-compatible embedding requests', async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const provider = createCodexProviderRelayEmbeddingsApiProvider({
+    apiKey: 'embedding-test',
+    model: 'vendor/test-embedding',
+    endpoint: 'https://embeddings.example.test/v1/embeddings',
+    headers: {
+      'X-Provider': 'example',
+    },
+    fetchImpl: (async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return new Response(JSON.stringify({
+        model: 'vendor/test-embedding',
+        data: [{
+          object: 'embedding',
+          index: 0,
+          embedding: [1, 0, 0],
+        }, {
+          object: 'embedding',
+          index: 1,
+          embedding: [0, 1, 0],
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch,
+  });
+
+  const result = await provider.embed(['first', 'second']);
+  const body = JSON.parse(String(calls[0].init.body));
+
+  assert.equal(calls[0].url, 'https://embeddings.example.test/v1/embeddings');
+  assert.equal((calls[0].init.headers as any).Authorization, 'Bearer embedding-test');
+  assert.equal((calls[0].init.headers as any)['X-Provider'], 'example');
+  assert.equal(body.model, 'vendor/test-embedding');
+  assert.deepEqual(body.input, ['first', 'second']);
+  assert.deepEqual(result.embeddings, [[1, 0, 0], [0, 1, 0]]);
+  assert.equal(result.dimensions, 3);
+});
+
+test('OpenRouter embedding provider is only a default wrapper over the generic embeddings API provider', async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const provider = createCodexProviderRelayOpenRouterEmbeddingProvider({
+    apiKey: 'openrouter-test',
+    fetchImpl: (async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return new Response(JSON.stringify({
+        model: 'qwen/qwen3-embedding-8b',
+        data: [{ embedding: [1, 2, 3] }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch,
+  });
+
+  await provider.embed(['hello']);
+  const body = JSON.parse(String(calls[0].init.body));
+
+  assert.equal(calls[0].url, 'https://openrouter.ai/api/v1/embeddings');
+  assert.equal((calls[0].init.headers as any).Authorization, 'Bearer openrouter-test');
+  assert.equal(body.model, 'qwen/qwen3-embedding-8b');
 });
 
 test('file_search executor applies total payload bounds across sources', async () => {
@@ -286,9 +585,12 @@ test('file_search executor applies total payload bounds across sources', async (
           uri: `memory://large-${index}`,
           path: `large-${index}.md`,
           score: 50 - index,
-          snippets: [{
+          content: [{
+            type: 'text' as const,
             line: 1,
             text: 'x'.repeat(1_000),
+            start_line: 1,
+            end_line: 1,
           }],
         })),
       };
@@ -305,8 +607,8 @@ test('file_search executor applies total payload bounds across sources', async (
   }));
   const content = result.content as CodexProviderRelayFileSearchExecutorContent;
 
-  assert.ok(content.results.length >= 1);
-  assert.ok(content.results.length < 5);
+  assert.ok(content.data.length >= 1);
+  assert.ok(content.data.length < 5);
 });
 
 test('local file_search executor requires explicit roots', () => {

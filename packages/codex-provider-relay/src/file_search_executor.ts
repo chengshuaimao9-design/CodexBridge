@@ -27,7 +27,8 @@ export type CodexProviderRelayFileSearchSourceInput =
   | CodexProviderRelayFileSearchSource
   | CodexProviderRelayLocalFileSearchSourceOptions
   | CodexProviderRelayMemoryFileSearchSourceOptions
-  | CodexProviderRelaySqliteFtsFileSearchSourceOptions;
+  | CodexProviderRelaySqliteFtsFileSearchSourceOptions
+  | CodexProviderRelayInMemoryVectorFileSearchSourceOptions;
 
 export interface CodexProviderRelayFileSearchSource {
   name: string;
@@ -41,6 +42,9 @@ export interface CodexProviderRelayFileSearchSourceRequest {
   query: string;
   terms: string[];
   pathGlob: string;
+  vectorStoreIds: string[];
+  filters: CodexProviderRelayFileSearchFilter | null;
+  rankingOptions: CodexProviderRelayFileSearchRankingOptions;
   maxResults: number;
   maxBytesPerFile: number;
   maxPayloadBytes: number;
@@ -51,7 +55,7 @@ export interface CodexProviderRelayFileSearchSourceRequest {
 }
 
 export interface CodexProviderRelayFileSearchSourceResult {
-  results: CodexProviderRelayFileSearchResult[];
+  results: CodexProviderRelayFileSearchSourceMatch[];
   scannedFiles?: number | null;
   skippedFiles?: number | null;
   metadata?: JsonRecord | null;
@@ -130,7 +134,58 @@ export interface CodexProviderRelaySqliteFtsColumns {
   score?: string | null;
 }
 
-export interface CodexProviderRelayFileSearchResult {
+export interface CodexProviderRelayEmbeddingProvider {
+  model: string;
+  embed(
+    input: string[],
+    options?: CodexProviderRelayEmbeddingProviderEmbedOptions,
+  ): Promise<CodexProviderRelayEmbeddingProviderResult> | CodexProviderRelayEmbeddingProviderResult;
+}
+
+export interface CodexProviderRelayEmbeddingProviderEmbedOptions {
+  signal?: AbortSignal | null;
+}
+
+export interface CodexProviderRelayEmbeddingProviderResult {
+  model: string;
+  embeddings: number[][];
+  dimensions?: number | null;
+}
+
+export type CodexProviderRelayEmbeddingsApiResponseParser = (body: JsonRecord) => number[][];
+
+export interface CodexProviderRelayEmbeddingsApiProviderOptions {
+  apiKey?: string | null;
+  model?: string | null;
+  endpoint?: string | null;
+  fetchImpl?: typeof fetch;
+  headers?: Record<string, string> | null;
+  requestBody?: JsonRecord | null;
+  responseParser?: CodexProviderRelayEmbeddingsApiResponseParser | null;
+}
+
+export interface CodexProviderRelayOpenRouterEmbeddingProviderOptions
+  extends Omit<CodexProviderRelayEmbeddingsApiProviderOptions, 'endpoint' | 'model'> {
+  model?: string | null;
+  endpoint?: string | null;
+}
+
+export interface CodexProviderRelayInMemoryVectorFileSearchSourceOptions {
+  type?: 'in-memory-vector' | null;
+  name?: string | null;
+  documents: CodexProviderRelayMemoryFileSearchDocument[];
+  embeddingProvider: CodexProviderRelayEmbeddingProvider;
+  maxDocumentsScanned?: number | null;
+  maxBytesPerDocument?: number | null;
+  snippetLines?: number | null;
+  includeContent?: boolean | null;
+  vectorWeight?: number | null;
+  textWeight?: number | null;
+}
+
+export interface CodexProviderRelayFileSearchSourceMatch {
+  file_id?: string | null;
+  filename?: string | null;
   title: string;
   uri: string;
   path: string;
@@ -138,16 +193,70 @@ export interface CodexProviderRelayFileSearchResult {
   source?: string | null;
   sourceType?: string | null;
   score: number;
-  snippets: Array<{
-    line: number;
-    text: string;
-  }>;
+  attributes?: JsonRecord | null;
+  content?: CodexProviderRelayFileSearchChunk[] | null;
+}
+
+export interface CodexProviderRelayFileSearchDocument {
+  file_id: string;
+  filename: string;
+  title: string;
+  uri: string;
+  path: string;
+  root?: string | null;
+  source?: string | null;
+  sourceType?: string | null;
+  attributes: JsonRecord;
+}
+
+export interface CodexProviderRelayFileSearchChunk {
+  type: 'text';
+  text: string;
+  line?: number | null;
+  start_line?: number | null;
+  end_line?: number | null;
+}
+
+export interface CodexProviderRelayFileSearchResult {
+  file_id: string;
+  filename: string;
+  score: number;
+  attributes: JsonRecord;
+  content: CodexProviderRelayFileSearchChunk[];
+}
+
+export type CodexProviderRelayFileSearchFilter =
+  | {
+    type: 'and' | 'or';
+    filters: CodexProviderRelayFileSearchFilter[];
+  }
+  | {
+    type: 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'nin';
+    key?: string | null;
+    property?: string | null;
+    value: unknown;
+  };
+
+export interface CodexProviderRelayFileSearchRankingOptions {
+  ranker: string;
+  scoreThreshold: number;
+  hybridSearch: {
+    embeddingWeight: number;
+    textWeight: number;
+  } | null;
 }
 
 export interface CodexProviderRelayFileSearchExecutorContent {
+  object: 'vector_store.search_results.page';
   query: string;
+  search_query: string;
   provider: string;
-  results: CodexProviderRelayFileSearchResult[];
+  data: CodexProviderRelayFileSearchResult[];
+  search_results: CodexProviderRelayFileSearchResult[];
+  has_more: boolean;
+  next_page: string | null;
+  vector_store_ids: string[];
+  ranking_options: CodexProviderRelayFileSearchRankingOptions;
   sourceCount: number;
   scannedFiles: number;
   skippedFiles: number;
@@ -208,6 +317,24 @@ interface NormalizedSqliteFtsFileSearchOptions {
   includeContent: boolean;
 }
 
+interface NormalizedInMemoryVectorFileSearchOptions {
+  name: string;
+  type: 'in-memory-vector';
+  documents: NormalizedMemoryFileSearchDocument[];
+  embeddingProvider: CodexProviderRelayEmbeddingProvider;
+  maxDocumentsScanned: number;
+  maxBytesPerDocument: number;
+  snippetLines: number;
+  includeContent: boolean;
+  vectorWeight: number;
+  textWeight: number;
+}
+
+interface EmbeddedMemoryFileSearchDocument {
+  document: NormalizedMemoryFileSearchDocument;
+  embedding: number[];
+}
+
 interface LocalFileSearchRoot {
   path: string;
   realPath: string;
@@ -256,6 +383,11 @@ const DEFAULT_IGNORE_EXTENSIONS = [
   '.zip',
 ];
 
+const DEFAULT_EMBEDDINGS_API_MODEL = 'qwen/qwen3-embedding-8b';
+const DEFAULT_EMBEDDINGS_API_ENDPOINT = 'https://openrouter.ai/api/v1/embeddings';
+const DEFAULT_OPENROUTER_EMBEDDING_MODEL = DEFAULT_EMBEDDINGS_API_MODEL;
+const DEFAULT_OPENROUTER_EMBEDDINGS_ENDPOINT = DEFAULT_EMBEDDINGS_API_ENDPOINT;
+
 export function createCodexProviderRelayFileSearchExecutor(
   options: CodexProviderRelayFileSearchExecutorOptions,
 ): CodexProviderRelayHostedToolExecutor {
@@ -271,21 +403,26 @@ export function createCodexProviderRelayFileSearchExecutor(
     if (terms.length === 0) {
       throw new Error('file_search executor requires at least one searchable query term.');
     }
-    const maxResults = clampInteger(request.arguments.max_results, 1, 50, normalizedOptions.maxResults);
+    const maxResults = fileSearchMaxResultsFromRequest(request, normalizedOptions.maxResults);
     const includeContent = typeof request.arguments.include_content === 'boolean'
       ? request.arguments.include_content
       : normalizedOptions.includeContent;
     const pathGlob = normalizePathGlob(request.arguments.path_glob);
+    const vectorStoreIds = normalizeStringArray(request.arguments.vector_store_ids);
+    const filters = normalizeFileSearchFilter(request.arguments.filters ?? request.arguments.attribute_filter);
+    const rankingOptions = normalizeFileSearchRankingOptions(request.arguments.ranking_options);
+    const searchSources = selectFileSearchSources(normalizedOptions.sources, vectorStoreIds);
 
     await request.emitDelta?.('searching sources', {
-      sourceCount: normalizedOptions.sources.length,
+      sourceCount: searchSources.length,
       maxResults,
+      vectorStoreIds,
     });
 
-    const aggregatedResults: CodexProviderRelayFileSearchResult[] = [];
+    const aggregatedResults: CodexProviderRelayFileSearchSourceMatch[] = [];
     let scannedFiles = 0;
     let skippedFiles = 0;
-    for (const source of normalizedOptions.sources) {
+    for (const source of searchSources) {
       const sourceType = normalizeSourceType(source);
       await request.emitDelta?.('searching source', {
         source: source.name,
@@ -295,6 +432,9 @@ export function createCodexProviderRelayFileSearchExecutor(
         query,
         terms,
         pathGlob,
+        vectorStoreIds,
+        filters,
+        rankingOptions,
         maxResults,
         maxBytesPerFile: normalizedOptions.maxBytesPerFile,
         maxPayloadBytes: normalizedOptions.maxPayloadBytes,
@@ -310,32 +450,41 @@ export function createCodexProviderRelayFileSearchExecutor(
       }
     }
 
-    aggregatedResults.sort((left, right) => (
+    const filteredResults = aggregatedResults.filter((result) => fileSearchResultMatchesFilter(result, filters));
+    filteredResults.sort((left, right) => (
       right.score - left.score
       || String(left.source ?? '').localeCompare(String(right.source ?? ''))
       || left.path.localeCompare(right.path)
     ));
+    const rankedResults = applyFileSearchRankingOptions(filteredResults, rankingOptions);
     const limitedResults = limitResultsByPayload(
-      aggregatedResults,
+      rankedResults,
       maxResults,
       normalizedOptions.maxPayloadBytes,
     );
+    const openAIResults = limitedResults.map((result) => toOpenAIFileSearchResult(result, rankedResults));
+    const provider = searchSources.length === 1
+      ? normalizeSourceType(searchSources[0])
+      : 'multi-source';
     return {
       content: {
+        object: 'vector_store.search_results.page',
         query,
-        provider: normalizedOptions.sources.length === 1
-          ? normalizeSourceType(normalizedOptions.sources[0])
-          : 'multi-source',
-        results: limitedResults,
-        sourceCount: normalizedOptions.sources.length,
+        search_query: query,
+        provider,
+        data: openAIResults,
+        search_results: openAIResults,
+        has_more: rankedResults.length > limitedResults.length,
+        next_page: null,
+        vector_store_ids: vectorStoreIds,
+        ranking_options: rankingOptions,
+        sourceCount: searchSources.length,
         scannedFiles,
         skippedFiles,
       } satisfies CodexProviderRelayFileSearchExecutorContent,
       metadata: {
-        provider: normalizedOptions.sources.length === 1
-          ? normalizeSourceType(normalizedOptions.sources[0])
-          : 'multi-source',
-        sourceCount: normalizedOptions.sources.length,
+        provider,
+        sourceCount: searchSources.length,
         resultCount: limitedResults.length,
         scannedFiles,
         skippedFiles,
@@ -373,7 +522,7 @@ export function createCodexProviderRelayLocalFileSearchSource(
         count: candidates.length,
       });
 
-      const results: CodexProviderRelayFileSearchResult[] = [];
+      const results: CodexProviderRelayFileSearchSourceMatch[] = [];
       let scannedFiles = 0;
       let skippedFiles = 0;
       for (const candidate of candidates) {
@@ -445,7 +594,7 @@ export function createCodexProviderRelayMemoryFileSearchSource(
         maxResults,
       });
 
-      const results: CodexProviderRelayFileSearchResult[] = [];
+      const results: CodexProviderRelayFileSearchSourceMatch[] = [];
       let scannedDocuments = 0;
       let skippedDocuments = 0;
       for (const document of normalizedOptions.documents) {
@@ -468,6 +617,7 @@ export function createCodexProviderRelayMemoryFileSearchSource(
           root: null,
           sourceName: normalizedOptions.name,
           sourceType: 'memory-documents',
+          attributes: document.metadata,
           content: document.content,
           terms: request.terms,
           includeContent,
@@ -545,7 +695,7 @@ export function createCodexProviderRelaySqliteFtsFileSearchSource(
         terms: request.terms,
       });
 
-      const results: CodexProviderRelayFileSearchResult[] = [];
+      const results: CodexProviderRelayFileSearchSourceMatch[] = [];
       let scannedRows = 0;
       let skippedRows = 0;
       for (const row of Array.isArray(rows) ? rows : []) {
@@ -573,6 +723,7 @@ export function createCodexProviderRelaySqliteFtsFileSearchSource(
           root: null,
           sourceName: normalizedOptions.name,
           sourceType: 'sqlite-fts',
+          attributes: document.metadata,
           content: document.content,
           terms: request.terms,
           includeContent,
@@ -601,6 +752,182 @@ export function createCodexProviderRelaySqliteFtsFileSearchSource(
           table: normalizedOptions.table,
           scannedRows,
           skippedRows,
+        },
+      };
+    },
+  };
+}
+
+export function createCodexProviderRelayEmbeddingsApiProvider(
+  options: CodexProviderRelayEmbeddingsApiProviderOptions,
+): CodexProviderRelayEmbeddingProvider {
+  const apiKey = normalizeString(options.apiKey);
+  const model = normalizeString(options.model) || DEFAULT_EMBEDDINGS_API_MODEL;
+  const endpoint = normalizeString(options.endpoint) || DEFAULT_EMBEDDINGS_API_ENDPOINT;
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const extraHeaders = normalizeHeaders(options.headers);
+  const baseRequestBody = isJsonRecord(options.requestBody) ? options.requestBody : {};
+  const responseParser = options.responseParser ?? normalizeEmbeddingsApiResponseData;
+  return {
+    model,
+    async embed(
+      input: string[],
+      embedOptions: CodexProviderRelayEmbeddingProviderEmbedOptions = {},
+    ): Promise<CodexProviderRelayEmbeddingProviderResult> {
+      const texts = input.map(normalizeString).filter(Boolean);
+      if (texts.length === 0) {
+        return {
+          model,
+          embeddings: [],
+          dimensions: null,
+        };
+      }
+      const response = await fetchImpl(endpoint, {
+        method: 'POST',
+        signal: embedOptions.signal ?? undefined,
+        headers: {
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          'Content-Type': 'application/json',
+          ...extraHeaders,
+        },
+        body: JSON.stringify({
+          ...baseRequestBody,
+          model,
+          input: texts,
+        }),
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        throw new Error(`Embeddings API provider returned HTTP ${response.status}: ${text.slice(0, 500)}`);
+      }
+      const body = parseJsonRecord(text, 'Embeddings API response');
+      const embeddings = responseParser(body);
+      return {
+        model: normalizeString(body.model) || model,
+        embeddings,
+        dimensions: embeddings[0]?.length ?? null,
+      };
+    },
+  };
+}
+
+export function createCodexProviderRelayOpenRouterEmbeddingProvider(
+  options: CodexProviderRelayOpenRouterEmbeddingProviderOptions,
+): CodexProviderRelayEmbeddingProvider {
+  const apiKey = normalizeString(options.apiKey);
+  if (!apiKey) {
+    throw new Error('OpenRouter embedding provider requires an API key.');
+  }
+  return createCodexProviderRelayEmbeddingsApiProvider({
+    ...options,
+    apiKey,
+    model: normalizeString(options.model) || DEFAULT_OPENROUTER_EMBEDDING_MODEL,
+    endpoint: normalizeString(options.endpoint) || DEFAULT_OPENROUTER_EMBEDDINGS_ENDPOINT,
+  });
+}
+
+export function createCodexProviderRelayInMemoryVectorFileSearchSource(
+  options: CodexProviderRelayInMemoryVectorFileSearchSourceOptions,
+): CodexProviderRelayFileSearchSource {
+  const normalizedOptions = normalizeInMemoryVectorFileSearchOptions(options);
+  let indexedDocumentsPromise: Promise<EmbeddedMemoryFileSearchDocument[]> | null = null;
+  return {
+    name: normalizedOptions.name,
+    type: 'in-memory-vector',
+    async search(request: CodexProviderRelayFileSearchSourceRequest): Promise<CodexProviderRelayFileSearchSourceResult> {
+      const maxResults = request.maxResults;
+      const includeContent = typeof request.includeContent === 'boolean'
+        ? request.includeContent
+        : normalizedOptions.includeContent;
+      const maxBytesPerDocument = Math.min(request.maxBytesPerFile, normalizedOptions.maxBytesPerDocument);
+      const snippetLines = Math.min(request.snippetLines, normalizedOptions.snippetLines);
+      indexedDocumentsPromise ??= embedMemoryDocuments(normalizedOptions);
+      const indexedDocuments = await indexedDocumentsPromise;
+
+      await request.emitDelta?.('querying in-memory vector index', {
+        source: normalizedOptions.name,
+        documentCount: indexedDocuments.length,
+        embeddingModel: normalizedOptions.embeddingProvider.model,
+        maxResults,
+      });
+
+      const queryEmbedding = (await normalizedOptions.embeddingProvider.embed([request.query])).embeddings[0];
+      if (!queryEmbedding || queryEmbedding.length === 0) {
+        return {
+          results: [],
+          scannedFiles: 0,
+          skippedFiles: 0,
+        };
+      }
+
+      const textWeight = request.rankingOptions.hybridSearch?.textWeight ?? normalizedOptions.textWeight;
+      const vectorWeight = request.rankingOptions.hybridSearch?.embeddingWeight ?? normalizedOptions.vectorWeight;
+      const scored: CodexProviderRelayFileSearchSourceMatch[] = [];
+      let scannedDocuments = 0;
+      let skippedDocuments = 0;
+      for (const entry of indexedDocuments) {
+        const document = entry.document;
+        if (scannedDocuments >= normalizedOptions.maxDocumentsScanned) {
+          break;
+        }
+        if (request.pathGlob && !pathMatchesGlob(document.path, request.pathGlob)) {
+          continue;
+        }
+        const documentBytes = Buffer.byteLength(document.content, 'utf8');
+        if (documentBytes > maxBytesPerDocument) {
+          skippedDocuments += 1;
+          continue;
+        }
+        scannedDocuments += 1;
+        const vectorScore = cosineSimilarity(queryEmbedding, entry.embedding);
+        const lexicalScore = lexicalScoreForText({
+          title: document.title,
+          path: document.path,
+          content: document.content,
+          terms: request.terms,
+        });
+        if (vectorScore <= 0 && lexicalScore <= 0) {
+          continue;
+        }
+        const normalizedLexicalScore = Math.min(1, lexicalScore / 40);
+        const score = (vectorScore * vectorWeight * 100) + (normalizedLexicalScore * textWeight * 100);
+        const result = createFileSearchSourceMatchFromDocument({
+          document,
+          sourceName: normalizedOptions.name,
+          sourceType: 'in-memory-vector',
+          score,
+          includeContent,
+          snippetLines,
+          terms: request.terms,
+          attributes: {
+            ...document.metadata,
+            embedding_model: normalizedOptions.embeddingProvider.model,
+            vector_score: Number(vectorScore.toFixed(6)),
+            lexical_score: Number(normalizedLexicalScore.toFixed(6)),
+          },
+        });
+        if (result) {
+          scored.push(result);
+          await request.emitDelta?.('in-memory vector document matched', {
+            source: normalizedOptions.name,
+            path: result.path,
+            score: result.score,
+            resultCount: scored.length,
+          });
+        }
+      }
+
+      scored.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+      return {
+        results: scored.slice(0, maxResults),
+        scannedFiles: scannedDocuments,
+        skippedFiles: skippedDocuments,
+        metadata: {
+          provider: 'in-memory-vector',
+          source: normalizedOptions.name,
+          embeddingModel: normalizedOptions.embeddingProvider.model,
+          scannedDocuments,
+          skippedDocuments,
         },
       };
     },
@@ -666,13 +993,20 @@ function normalizeFileSearchSource(
   if (source && Array.isArray((source as CodexProviderRelayLocalFileSearchSourceOptions).roots)) {
     return createCodexProviderRelayLocalFileSearchSource(source as CodexProviderRelayLocalFileSearchSourceOptions);
   }
+  if (
+    source
+    && Array.isArray((source as CodexProviderRelayInMemoryVectorFileSearchSourceOptions).documents)
+    && (source as CodexProviderRelayInMemoryVectorFileSearchSourceOptions).embeddingProvider
+  ) {
+    return createCodexProviderRelayInMemoryVectorFileSearchSource(source as CodexProviderRelayInMemoryVectorFileSearchSourceOptions);
+  }
   if (source && Array.isArray((source as CodexProviderRelayMemoryFileSearchSourceOptions).documents)) {
     return createCodexProviderRelayMemoryFileSearchSource(source as CodexProviderRelayMemoryFileSearchSourceOptions);
   }
   if (source && normalizeString((source as CodexProviderRelaySqliteFtsFileSearchSourceOptions).table)) {
     return createCodexProviderRelaySqliteFtsFileSearchSource(source as CodexProviderRelaySqliteFtsFileSearchSourceOptions);
   }
-  throw new Error('file_search sources must be source adapters, local-fs source options, memory-documents source options, or sqlite-fts source options.');
+  throw new Error('file_search sources must be source adapters, local-fs source options, memory-documents source options, sqlite-fts source options, or in-memory-vector source options.');
 }
 
 async function normalizeLocalFileSearchOptions(
@@ -796,6 +1130,30 @@ function normalizeSqliteFtsFileSearchOptions(
   };
 }
 
+function normalizeInMemoryVectorFileSearchOptions(
+  options: CodexProviderRelayInMemoryVectorFileSearchSourceOptions,
+): NormalizedInMemoryVectorFileSearchOptions {
+  const embeddingProvider = options.embeddingProvider;
+  if (!embeddingProvider || typeof embeddingProvider.embed !== 'function') {
+    throw new Error('in-memory-vector file_search source requires an embedding provider.');
+  }
+  const documents = Array.isArray(options.documents)
+    ? options.documents.map(normalizeMemoryFileSearchDocument).filter(Boolean)
+    : [];
+  return {
+    name: normalizeString(options.name) || 'in-memory-vector',
+    type: 'in-memory-vector',
+    documents,
+    embeddingProvider,
+    maxDocumentsScanned: clampInteger(options.maxDocumentsScanned, 1, 100_000, 5_000),
+    maxBytesPerDocument: clampInteger(options.maxBytesPerDocument, 1_024, 2 * 1024 * 1024, 256 * 1024),
+    snippetLines: clampInteger(options.snippetLines, 1, 8, 2),
+    includeContent: options.includeContent !== false,
+    vectorWeight: clampNumber(options.vectorWeight, 0, 1, 0.7),
+    textWeight: clampNumber(options.textWeight, 0, 1, 0.3),
+  };
+}
+
 function normalizeSqliteFtsQuery(
   options: CodexProviderRelaySqliteFtsFileSearchSourceOptions,
 ): CodexProviderRelaySqliteFtsQueryFunction {
@@ -891,6 +1249,236 @@ function sqliteFtsScoreFromRow(
   return score;
 }
 
+async function embedMemoryDocuments(
+  options: NormalizedInMemoryVectorFileSearchOptions,
+): Promise<EmbeddedMemoryFileSearchDocument[]> {
+  if (options.documents.length === 0) {
+    return [];
+  }
+  const input = options.documents.map((document) => embeddingTextForMemoryDocument(document));
+  const result = await options.embeddingProvider.embed(input);
+  const embeddedDocuments: EmbeddedMemoryFileSearchDocument[] = [];
+  for (let index = 0; index < options.documents.length; index += 1) {
+    const embedding = normalizeEmbeddingVector(result.embeddings[index]);
+    if (embedding.length === 0) {
+      continue;
+    }
+    embeddedDocuments.push({
+      document: options.documents[index],
+      embedding,
+    });
+  }
+  return embeddedDocuments;
+}
+
+function embeddingTextForMemoryDocument(document: NormalizedMemoryFileSearchDocument): string {
+  return [
+    document.title,
+    document.path,
+    document.content,
+  ].filter(Boolean).join('\n\n');
+}
+
+function normalizeEmbeddingsApiResponseData(body: JsonRecord): number[][] {
+  if (!Array.isArray(body.data)) {
+    throw new Error('Embeddings API response data must be an array.');
+  }
+  return body.data.map((entry) => {
+    const embedding = Array.isArray(entry)
+      ? entry
+      : Array.isArray(entry?.embedding)
+        ? entry.embedding
+        : [];
+    return normalizeEmbeddingVector(embedding);
+  });
+}
+
+function normalizeHeaders(value: Record<string, string> | null | undefined): Record<string, string> {
+  if (!value) {
+    return {};
+  }
+  return Object.fromEntries(Object.entries(value)
+    .map(([key, headerValue]) => [normalizeString(key), normalizeString(headerValue)] as const)
+    .filter(([key, headerValue]) => key && headerValue));
+}
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeEmbeddingVector(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => Number(entry))
+    .filter((entry) => Number.isFinite(entry));
+}
+
+function parseJsonRecord(text: string, label: string): JsonRecord {
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`${label} must be a JSON object.`);
+    }
+    return parsed as JsonRecord;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes(label)) {
+      throw error;
+    }
+    throw new Error(`${label} was not valid JSON: ${text.slice(0, 500)}`);
+  }
+}
+
+function cosineSimilarity(left: number[], right: number[]): number {
+  const dimensions = Math.min(left.length, right.length);
+  if (dimensions === 0) {
+    return 0;
+  }
+  let dot = 0;
+  let leftNorm = 0;
+  let rightNorm = 0;
+  for (let index = 0; index < dimensions; index += 1) {
+    const leftValue = left[index];
+    const rightValue = right[index];
+    dot += leftValue * rightValue;
+    leftNorm += leftValue * leftValue;
+    rightNorm += rightValue * rightValue;
+  }
+  if (leftNorm <= 0 || rightNorm <= 0) {
+    return 0;
+  }
+  return Math.max(0, dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm)));
+}
+
+function lexicalScoreForText({
+  title,
+  path: resultPath,
+  content,
+  terms,
+}: {
+  title: string;
+  path: string;
+  content: string;
+  terms: string[];
+}): number {
+  let score = 0;
+  const lowerPath = resultPath.toLowerCase();
+  const lowerTitle = title.toLowerCase();
+  const lowerContent = content.toLowerCase();
+  for (const term of terms) {
+    if (lowerPath.includes(term)) {
+      score += 2;
+    }
+    if (lowerTitle.includes(term)) {
+      score += 4;
+    }
+    const matches = lowerContent.match(new RegExp(escapeRegExp(term), 'gu'));
+    score += (matches?.length ?? 0) * 10;
+  }
+  return score;
+}
+
+function createFileSearchSourceMatchFromDocument({
+  document,
+  sourceName,
+  sourceType,
+  score,
+  includeContent,
+  snippetLines,
+  terms,
+  attributes,
+}: {
+  document: NormalizedMemoryFileSearchDocument;
+  sourceName: string;
+  sourceType: string;
+  score: number;
+  includeContent: boolean;
+  snippetLines: number;
+  terms: string[];
+  attributes?: JsonRecord | null;
+}): CodexProviderRelayFileSearchSourceMatch | null {
+  if (score <= 0) {
+    return null;
+  }
+  const filename = path.basename(document.path) || document.title;
+  const contentChunks = includeContent
+    ? contentChunksForTerms({
+      content: document.content,
+      terms,
+      snippetLines,
+    })
+    : [];
+  return {
+    file_id: stableFileSearchFileId(sourceName, document.path || document.title),
+    filename,
+    title: document.title,
+    uri: document.uri,
+    path: document.path,
+    root: null,
+    source: sourceName,
+    sourceType,
+    score,
+    attributes: normalizeFileSearchAttributes({
+      ...(attributes && typeof attributes === 'object' ? attributes : {}),
+      filename,
+      path: document.path,
+      source: sourceName,
+      source_type: sourceType,
+    }),
+    content: contentChunks,
+  };
+}
+
+function contentChunksForTerms({
+  content,
+  terms,
+  snippetLines,
+}: {
+  content: string;
+  terms: string[];
+  snippetLines: number;
+}): CodexProviderRelayFileSearchChunk[] {
+  const lines = content.split(/\r?\n/u);
+  const chunks: CodexProviderRelayFileSearchChunk[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const lowerLine = lines[index].toLowerCase();
+    const hits = terms.filter((term) => lowerLine.includes(term)).length;
+    if (hits === 0) {
+      continue;
+    }
+    for (
+      let snippetIndex = Math.max(0, index - snippetLines);
+      snippetIndex <= Math.min(lines.length - 1, index + snippetLines);
+      snippetIndex += 1
+    ) {
+      if (chunks.some((chunk) => chunk.line === snippetIndex + 1)) {
+        continue;
+      }
+      chunks.push({
+        type: 'text',
+        line: snippetIndex + 1,
+        text: lines[snippetIndex].slice(0, 500),
+        start_line: snippetIndex + 1,
+        end_line: snippetIndex + 1,
+      });
+      if (chunks.length >= 4) {
+        return chunks;
+      }
+    }
+  }
+  if (chunks.length === 0 && content) {
+    chunks.push({
+      type: 'text',
+      line: 1,
+      text: content.split(/\r?\n/u)[0]?.slice(0, 500) ?? '',
+      start_line: 1,
+      end_line: 1,
+    });
+  }
+  return chunks.filter((chunk) => chunk.text);
+}
+
 function sqliteFtsQueryFromTerms(terms: string[]): string {
   return terms
     .map((term) => `"${term.replace(/"/gu, '""')}"`)
@@ -914,6 +1502,10 @@ function sqlAliasFromIdentifier(identifier: string): string {
     .split('.')
     .at(-1)!
     .replace(/^"|"$/gu, '');
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
 async function collectCandidateFiles(
@@ -1009,7 +1601,7 @@ function searchFileContent({
   includeContent: boolean;
   snippetLines: number;
   sourceName: string;
-}): CodexProviderRelayFileSearchResult | null {
+}): CodexProviderRelayFileSearchSourceMatch | null {
   return searchTextContent({
     title: candidate.relativePath,
     uri: pathToFileURL(candidate.absolutePath).toString(),
@@ -1017,6 +1609,11 @@ function searchFileContent({
     root: candidate.root.path,
     sourceName,
     sourceType: 'local-fs',
+    attributes: {
+      root: candidate.root.path,
+      path: candidate.relativePath,
+      filename: path.basename(candidate.relativePath),
+    },
     content,
     terms,
     includeContent,
@@ -1031,6 +1628,7 @@ function searchTextContent({
   root,
   sourceName,
   sourceType,
+  attributes,
   content,
   terms,
   includeContent,
@@ -1042,50 +1640,34 @@ function searchTextContent({
   root: string | null;
   sourceName: string;
   sourceType: string;
+  attributes?: JsonRecord | null;
   content: string;
   terms: string[];
   includeContent: boolean;
   snippetLines: number;
-}): CodexProviderRelayFileSearchResult | null {
-  const lines = content.split(/\r?\n/u);
-  const snippets: Array<{ line: number; text: string }> = [];
-  let score = 0;
-  const lowerPath = resultPath.toLowerCase();
-  const lowerTitle = title.toLowerCase();
-  for (const term of terms) {
-    if (lowerPath.includes(term)) {
-      score += 2;
-    }
-    if (lowerTitle.includes(term)) {
-      score += 4;
-    }
-  }
-  for (let index = 0; index < lines.length; index += 1) {
-    const lowerLine = lines[index].toLowerCase();
-    const hits = terms.filter((term) => lowerLine.includes(term)).length;
-    if (hits === 0) {
-      continue;
-    }
-    score += hits * 10;
-    if (includeContent && snippets.length < 4) {
-      for (
-        let snippetIndex = Math.max(0, index - snippetLines);
-        snippetIndex <= Math.min(lines.length - 1, index + snippetLines);
-        snippetIndex += 1
-      ) {
-        if (!snippets.some((snippet) => snippet.line === snippetIndex + 1)) {
-          snippets.push({
-            line: snippetIndex + 1,
-            text: lines[snippetIndex].slice(0, 500),
-          });
-        }
-      }
-    }
-  }
+}): CodexProviderRelayFileSearchSourceMatch | null {
+  const score = lexicalScoreForText({
+    title,
+    path: resultPath,
+    content,
+    terms,
+  });
   if (score <= 0) {
     return null;
   }
+  const filename = path.basename(resultPath) || title;
+  const fileId = stableFileSearchFileId(sourceName, resultPath || title);
+  const normalizedAttributes = normalizeFileSearchAttributes({
+    ...(attributes && typeof attributes === 'object' ? attributes : {}),
+    filename,
+    path: resultPath,
+    source: sourceName,
+    source_type: sourceType,
+    ...(root ? { root } : {}),
+  });
   return {
+    file_id: fileId,
+    filename,
     title,
     uri,
     path: resultPath,
@@ -1093,7 +1675,14 @@ function searchTextContent({
     source: sourceName,
     sourceType,
     score,
-    snippets,
+    attributes: normalizedAttributes,
+    content: includeContent
+      ? contentChunksForTerms({
+        content,
+        terms,
+        snippetLines,
+      })
+      : [],
   };
 }
 
@@ -1105,6 +1694,215 @@ function fileSearchQueryFromRequest(request: CodexProviderRelayHostedToolExecuti
     request.arguments.input,
     request.rawArguments,
   ]);
+}
+
+function fileSearchMaxResultsFromRequest(
+  request: CodexProviderRelayHostedToolExecutionRequest,
+  fallback: number,
+): number {
+  return clampInteger(
+    request.arguments.max_num_results ?? request.arguments.max_results,
+    1,
+    50,
+    fallback,
+  );
+}
+
+function selectFileSearchSources(
+  sources: CodexProviderRelayFileSearchSource[],
+  vectorStoreIds: string[],
+): CodexProviderRelayFileSearchSource[] {
+  if (vectorStoreIds.length === 0) {
+    return sources;
+  }
+  const allowed = new Set(vectorStoreIds.map((entry) => entry.toLowerCase()));
+  return sources.filter((source) => allowed.has(source.name.toLowerCase()));
+}
+
+function normalizeFileSearchRankingOptions(value: unknown): CodexProviderRelayFileSearchRankingOptions {
+  const record = value && typeof value === 'object' ? value as JsonRecord : {};
+  const hybridSearch = record.hybrid_search && typeof record.hybrid_search === 'object'
+    ? record.hybrid_search as JsonRecord
+    : null;
+  return {
+    ranker: normalizeString(record.ranker) || 'auto',
+    scoreThreshold: clampNumber(record.score_threshold, 0, 1, 0),
+    hybridSearch: hybridSearch
+      ? {
+        embeddingWeight: clampNumber(
+          hybridSearch.embedding_weight ?? hybridSearch.rrf_embedding_weight,
+          0,
+          1,
+          0.5,
+        ),
+        textWeight: clampNumber(
+          hybridSearch.text_weight ?? hybridSearch.rrf_text_weight,
+          0,
+          1,
+          0.5,
+        ),
+      }
+      : null,
+  };
+}
+
+function normalizeFileSearchFilter(value: unknown): CodexProviderRelayFileSearchFilter | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const record = value as JsonRecord;
+  const type = normalizeString(record.type).toLowerCase();
+  if ((type === 'and' || type === 'or') && Array.isArray(record.filters)) {
+    const filters = record.filters.map(normalizeFileSearchFilter).filter(Boolean) as CodexProviderRelayFileSearchFilter[];
+    return filters.length > 0 ? { type, filters } : null;
+  }
+  if (['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in', 'nin'].includes(type)) {
+    const key = normalizeString(record.key ?? record.property);
+    if (!key) {
+      return null;
+    }
+    return {
+      type: type as 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'nin',
+      key: normalizeString(record.key) || null,
+      property: normalizeString(record.property) || null,
+      value: record.value,
+    };
+  }
+  return null;
+}
+
+function fileSearchResultMatchesFilter(
+  result: CodexProviderRelayFileSearchSourceMatch,
+  filter: CodexProviderRelayFileSearchFilter | null,
+): boolean {
+  if (!filter) {
+    return true;
+  }
+  if (filter.type === 'and') {
+    return filter.filters.every((entry) => fileSearchResultMatchesFilter(result, entry));
+  }
+  if (filter.type === 'or') {
+    return filter.filters.some((entry) => fileSearchResultMatchesFilter(result, entry));
+  }
+  const comparisonFilter = filter as Extract<CodexProviderRelayFileSearchFilter, { value: unknown }>;
+  const key = normalizeString(comparisonFilter.key ?? comparisonFilter.property);
+  const actual = fileSearchResultAttributeValue(result, key);
+  switch (comparisonFilter.type) {
+    case 'eq':
+      return compareFilterValues(actual, comparisonFilter.value) === 0;
+    case 'ne':
+      return compareFilterValues(actual, comparisonFilter.value) !== 0;
+    case 'gt':
+      return compareFilterValues(actual, comparisonFilter.value) > 0;
+    case 'gte':
+      return compareFilterValues(actual, comparisonFilter.value) >= 0;
+    case 'lt':
+      return compareFilterValues(actual, comparisonFilter.value) < 0;
+    case 'lte':
+      return compareFilterValues(actual, comparisonFilter.value) <= 0;
+    case 'in':
+      return Array.isArray(comparisonFilter.value)
+        ? comparisonFilter.value.some((value) => compareFilterValues(actual, value) === 0)
+        : false;
+    case 'nin':
+      return Array.isArray(comparisonFilter.value)
+        ? !comparisonFilter.value.some((value) => compareFilterValues(actual, value) === 0)
+        : true;
+    default:
+      return true;
+  }
+}
+
+function fileSearchResultAttributeValue(result: CodexProviderRelayFileSearchSourceMatch, key: string): unknown {
+  const attributes = result.attributes && typeof result.attributes === 'object'
+    ? result.attributes
+    : {};
+  switch (key) {
+    case 'file_id':
+      return result.file_id;
+    case 'filename':
+      return result.filename;
+    case 'path':
+      return result.path;
+    case 'source':
+      return result.source;
+    case 'source_type':
+    case 'sourceType':
+      return result.sourceType;
+    default:
+      return attributes[key];
+  }
+}
+
+function compareFilterValues(left: unknown, right: unknown): number {
+  if (typeof left === 'number' || typeof right === 'number') {
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    if (!Number.isFinite(leftNumber) || !Number.isFinite(rightNumber)) {
+      return String(left ?? '').localeCompare(String(right ?? ''));
+    }
+    return leftNumber === rightNumber ? 0 : leftNumber > rightNumber ? 1 : -1;
+  }
+  const leftString = String(left ?? '');
+  const rightString = String(right ?? '');
+  return leftString === rightString ? 0 : leftString.localeCompare(rightString);
+}
+
+function applyFileSearchRankingOptions(
+  results: CodexProviderRelayFileSearchSourceMatch[],
+  rankingOptions: CodexProviderRelayFileSearchRankingOptions,
+): CodexProviderRelayFileSearchSourceMatch[] {
+  if (rankingOptions.scoreThreshold <= 0 || results.length === 0) {
+    return results;
+  }
+  const maxScore = Math.max(...results.map((result) => result.score), 0);
+  if (maxScore <= 0) {
+    return [];
+  }
+  return results.filter((result) => result.score / maxScore >= rankingOptions.scoreThreshold);
+}
+
+function toOpenAIFileSearchResult(
+  result: CodexProviderRelayFileSearchSourceMatch,
+  rankedResults: CodexProviderRelayFileSearchSourceMatch[],
+): CodexProviderRelayFileSearchResult {
+  return {
+    file_id: normalizeString(result.file_id) || stableFileSearchFileId(result.source ?? 'file_search', result.path),
+    filename: normalizeString(result.filename) || path.basename(result.path) || result.title,
+    score: normalizeOpenAIFileSearchScore(result, rankedResults),
+    attributes: normalizeFileSearchAttributes(result.attributes),
+    content: Array.isArray(result.content)
+      ? result.content.map(normalizeFileSearchChunk).filter(Boolean) as CodexProviderRelayFileSearchChunk[]
+      : [],
+  };
+}
+
+function normalizeOpenAIFileSearchScore(
+  result: CodexProviderRelayFileSearchSourceMatch,
+  rankedResults: CodexProviderRelayFileSearchSourceMatch[],
+): number {
+  const maxScore = Math.max(...rankedResults.map((entry) => entry.score), 0);
+  if (maxScore <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.min(1, Number((result.score / maxScore).toFixed(6))));
+}
+
+function normalizeFileSearchChunk(value: CodexProviderRelayFileSearchChunk): CodexProviderRelayFileSearchChunk | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const text = normalizeString(value.text);
+  if (!text) {
+    return null;
+  }
+  return {
+    type: 'text',
+    text,
+    line: value.line ?? null,
+    start_line: value.start_line ?? value.line ?? null,
+    end_line: value.end_line ?? value.line ?? null,
+  };
 }
 
 function tokenizeQuery(query: string): string[] {
@@ -1173,38 +1971,92 @@ function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return [...new Set(value.map(normalizeString).filter(Boolean))];
+}
+
+function normalizeFileSearchAttributes(value: unknown): JsonRecord {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+  const attributes: JsonRecord = {};
+  for (const [key, entryValue] of Object.entries(value as JsonRecord)) {
+    const normalizedKey = normalizeString(key);
+    if (!normalizedKey || entryValue === undefined) {
+      continue;
+    }
+    if (
+      entryValue === null
+      || typeof entryValue === 'string'
+      || typeof entryValue === 'number'
+      || typeof entryValue === 'boolean'
+      || Array.isArray(entryValue)
+    ) {
+      attributes[normalizedKey] = entryValue;
+    }
+  }
+  return attributes;
+}
+
+function stableFileSearchFileId(sourceName: string, resultPath: string): string {
+  const raw = `${sourceName}:${resultPath}`;
+  let hash = 2166136261;
+  for (let index = 0; index < raw.length; index += 1) {
+    hash ^= raw.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `file_${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
 function normalizeSourceType(source: CodexProviderRelayFileSearchSource): string {
   return normalizeString(source.type) || 'custom';
 }
 
 function normalizeFileSearchResult(
-  result: CodexProviderRelayFileSearchResult,
+  result: CodexProviderRelayFileSearchSourceMatch,
   source: CodexProviderRelayFileSearchSource,
   sourceType: string,
-): CodexProviderRelayFileSearchResult {
+): CodexProviderRelayFileSearchSourceMatch {
+  const normalizedPath = normalizeString(result.path) || normalizeString(result.title);
+  const normalizedTitle = normalizeString(result.title) || normalizedPath || source.name;
+  const filename = normalizeString(result.filename) || path.basename(normalizedPath) || normalizedTitle;
+  const sourceName = normalizeString(result.source) || source.name;
+  const normalizedSourceType = normalizeString(result.sourceType) || sourceType;
+  const content = Array.isArray(result.content)
+    ? result.content.map(normalizeFileSearchChunk).filter(Boolean) as CodexProviderRelayFileSearchChunk[]
+    : [];
+  const attributes = normalizeFileSearchAttributes({
+    ...(result.attributes && typeof result.attributes === 'object' ? result.attributes : {}),
+    filename,
+    path: normalizedPath,
+    source: sourceName,
+    source_type: normalizedSourceType,
+    ...(result.root ? { root: result.root } : {}),
+  });
   return {
-    title: normalizeString(result.title) || normalizeString(result.path) || source.name,
+    file_id: normalizeString(result.file_id) || stableFileSearchFileId(sourceName, normalizedPath || normalizedTitle),
+    filename,
+    title: normalizedTitle,
     uri: normalizeString(result.uri),
-    path: normalizeString(result.path) || normalizeString(result.title),
+    path: normalizedPath,
     root: result.root ?? null,
-    source: normalizeString(result.source) || source.name,
-    sourceType: normalizeString(result.sourceType) || sourceType,
+    source: sourceName,
+    sourceType: normalizedSourceType,
     score: Number.isFinite(Number(result.score)) ? Number(result.score) : 0,
-    snippets: Array.isArray(result.snippets)
-      ? result.snippets.map((snippet) => ({
-        line: clampInteger(snippet.line, 1, Number.MAX_SAFE_INTEGER, 1),
-        text: normalizeString(snippet.text).slice(0, 1_000),
-      })).filter((snippet) => snippet.text)
-      : [],
+    attributes,
+    content,
   };
 }
 
 function limitResultsByPayload(
-  results: CodexProviderRelayFileSearchResult[],
+  results: CodexProviderRelayFileSearchSourceMatch[],
   maxResults: number,
   maxPayloadBytes: number,
-): CodexProviderRelayFileSearchResult[] {
-  const limited: CodexProviderRelayFileSearchResult[] = [];
+): CodexProviderRelayFileSearchSourceMatch[] {
+  const limited: CodexProviderRelayFileSearchSourceMatch[] = [];
   let payloadBytes = 0;
   for (const result of results) {
     if (limited.length >= maxResults) {
@@ -1231,6 +2083,14 @@ function normalizeNonNegativeInteger(value: unknown): number {
 function clampInteger(value: unknown, min: number, max: number, fallback: number): number {
   const number = Number(value);
   if (!Number.isInteger(number)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, number));
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
     return fallback;
   }
   return Math.min(max, Math.max(min, number));

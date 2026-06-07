@@ -1326,7 +1326,7 @@ function buildRelayEmulatedHostedChatTool(
 function defaultRelayHostedToolDescription(name: string): string {
   switch (name) {
     case 'file_search':
-      return 'Search explicitly configured local files and return concise matching snippets.';
+      return 'Search explicitly configured file-search sources and return OpenAI-compatible file chunks.';
     case 'web_search':
     default:
       return 'Search the web for current information and return concise cited results.';
@@ -1350,11 +1350,34 @@ function relayHostedToolParameters(name: string): JsonRecord {
           type: 'integer',
           minimum: 1,
           maximum: 50,
-          description: 'Maximum number of matching snippets to return.',
+          description: 'Maximum number of matching file search results to return.',
+        },
+        max_num_results: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 50,
+          description: 'OpenAI-compatible maximum number of file search results to return.',
+        },
+        vector_store_ids: {
+          type: 'array',
+          items: {
+            type: 'string',
+          },
+          description: 'Optional OpenAI-compatible vector store ids. In relay-emulated mode these map to configured source names.',
+        },
+        filters: {
+          type: 'object',
+          description: 'Optional OpenAI-compatible metadata filter tree using eq/ne/gt/gte/lt/lte/in/nin and and/or.',
+          additionalProperties: true,
+        },
+        ranking_options: {
+          type: 'object',
+          description: 'Optional OpenAI-compatible ranking options, including ranker, score_threshold, and hybrid_search weights.',
+          additionalProperties: true,
         },
         include_content: {
           type: 'boolean',
-          description: 'Whether to include snippet text in results.',
+          description: 'Whether to include retrieved chunk text in results.',
         },
       },
       required: ['query'],

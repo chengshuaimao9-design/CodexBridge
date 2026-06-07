@@ -1190,18 +1190,44 @@ test('adapter server streams final answer after relay-emulated file_search execu
         executedRequests.push(JSON.parse(JSON.stringify(request)));
         return {
           content: {
+            object: 'vector_store.search_results.page',
             query: request.arguments.query,
+            search_query: request.arguments.query,
             provider: 'local-fs',
-            results: [{
-              title: 'src/agent.ts',
-              uri: 'file:///repo/src/agent.ts',
-              path: 'src/agent.ts',
-              score: 12,
-              snippets: [{
-                line: 2,
+            data: [{
+              file_id: 'file_agent',
+              filename: 'agent.ts',
+              score: 1,
+              attributes: {
+                path: 'src/agent.ts',
+                source: 'local-fs',
+              },
+              content: [{
+                type: 'text',
                 text: 'file search target',
+                line: 2,
+                start_line: 2,
+                end_line: 2,
               }],
             }],
+            search_results: [{
+              file_id: 'file_agent',
+              filename: 'agent.ts',
+              score: 1,
+              attributes: {
+                path: 'src/agent.ts',
+                source: 'local-fs',
+              },
+              content: [{
+                type: 'text',
+                text: 'file search target',
+                line: 2,
+                start_line: 2,
+                end_line: 2,
+              }],
+            }],
+            has_more: false,
+            next_page: null,
           },
         };
       },

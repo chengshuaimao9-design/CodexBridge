@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   createCodexProviderRelayFileSearchExecutor,
   type CodexProviderRelayFileSearchExecutorContent,
+  type CodexProviderRelayFileSearchSource,
 } from '../src/index.js';
 
 async function createTempWorkspace(): Promise<string> {
@@ -86,9 +87,106 @@ test('local file_search executor can omit snippet content', async () => {
   assert.equal(content.results.every((result) => result.snippets.length === 0), true);
 });
 
+test('file_search executor aggregates explicit sources without host coupling', async () => {
+  const root = await createTempWorkspace();
+  const memorySource: CodexProviderRelayFileSearchSource = {
+    name: 'memory-documents',
+    type: 'memory-documents',
+    async search(request) {
+      await request.emitDelta?.('memory source searched', {
+        query: request.query,
+      });
+      return {
+        results: [{
+          title: 'Memory doc',
+          uri: 'memory://doc-1',
+          path: 'memory/doc-1.md',
+          score: 99,
+          snippets: [{
+            line: 1,
+            text: 'A memory document about hosted file search.',
+          }],
+        }],
+      };
+    },
+  };
+  const deltas: any[] = [];
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      memorySource,
+      {
+        type: 'local-fs',
+        name: 'workspace',
+        roots: [root],
+      },
+    ],
+    maxResults: 5,
+  });
+
+  const result = await executor({
+    ...baseRequest({
+      query: 'hosted file search',
+    }),
+    emitDelta: async (delta, metadata) => {
+      deltas.push({ delta, metadata });
+    },
+  });
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.equal(content.provider, 'multi-source');
+  assert.equal(content.sourceCount, 2);
+  assert.equal(content.results[0].source, 'memory-documents');
+  assert.equal(content.results.some((entry) => entry.source === 'workspace'), true);
+  assert.equal(deltas.some((entry) => entry.delta === 'searching source'), true);
+  assert.equal(deltas.some((entry) => entry.delta === 'memory source searched'), true);
+});
+
+test('file_search executor applies total payload bounds across sources', async () => {
+  const largeSource: CodexProviderRelayFileSearchSource = {
+    name: 'large-source',
+    type: 'memory-documents',
+    search() {
+      return {
+        results: Array.from({ length: 5 }, (_, index) => ({
+          title: `Large ${index}`,
+          uri: `memory://large-${index}`,
+          path: `large-${index}.md`,
+          score: 50 - index,
+          snippets: [{
+            line: 1,
+            text: 'x'.repeat(1_000),
+          }],
+        })),
+      };
+    },
+  };
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [largeSource],
+    maxResults: 5,
+    maxPayloadBytes: 1_200,
+  });
+
+  const result = await executor(baseRequest({
+    query: 'large payload',
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.ok(content.results.length >= 1);
+  assert.ok(content.results.length < 5);
+});
+
 test('local file_search executor requires explicit roots', () => {
   assert.throws(
     () => createCodexProviderRelayFileSearchExecutor({ roots: [] }),
-    /requires at least one explicit root/u,
+    /requires at least one source or explicit root/u,
+  );
+  assert.throws(
+    () => createCodexProviderRelayFileSearchExecutor({
+      sources: [{
+        type: 'local-fs',
+        roots: [],
+      }],
+    }),
+    /local-fs source requires at least one explicit root/u,
   );
 });

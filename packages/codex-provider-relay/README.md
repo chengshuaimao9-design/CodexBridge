@@ -52,7 +52,7 @@ Hosts that need UI observability can enable `emitHostedToolSseEvents`. This opt-
 
 Hosts can bring their own executor or use the built-in `createCodexProviderRelayWebSearchExecutor` factory for Tavily, Brave Search, or Serper. The SDK only accepts keys through runtime options; it does not load or store provider secrets.
 
-The built-in `createCodexProviderRelayFileSearchExecutor` is a local filesystem adapter for explicitly configured roots. It never scans the process working directory implicitly, skips common dependency/build/binary paths by default, avoids following symlinks unless enabled, and bounds scanned files, bytes per file, snippets, and result count. This is the first safe `file_search` adapter; semantic/vector stores should be added as separate executors behind the same hosted-tool contract instead of changing the protocol surface.
+The built-in `createCodexProviderRelayFileSearchExecutor` now accepts a generic `sources` list while preserving `roots` as a local-filesystem shortcut. The local filesystem source never scans the process working directory implicitly, skips common dependency/build/binary paths by default, avoids following symlinks unless enabled, rejects unsafe `path_glob` traversal, and bounds scanned files, bytes per file, total payload bytes, snippets, and result count. This is the first safe `file_search` adapter; semantic/vector stores should be added as separate sources behind the same executor contract instead of changing the protocol surface.
 
 The profile surface exposes the safe presets app-servers should use:
 

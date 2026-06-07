@@ -95,7 +95,10 @@ test('codex provider relay package includes public examples and package readines
   const requiredFiles = [
     'docs/OPENAI_BUILTIN_TOOL_COMPATIBILITY.md',
     'docs/INDEPENDENT_PACKAGE_CHECKLIST.md',
+    'docs/LIVE_SMOKE_RECIPES.md',
+    'docs/RELEASE_READINESS.md',
     'docs/RECIPES.md',
+    'docs/UNSAFE_TOOL_SECURITY.md',
     'examples/mixed-openrouter-runtime.ts',
     'examples/relay-emulated-web-search.ts',
     'examples/relay-emulated-file-search-local-vector.ts',
@@ -107,4 +110,18 @@ test('codex provider relay package includes public examples and package readines
   for (const relativePath of requiredFiles) {
     assert.equal(fs.existsSync(path.join(packageRoot, relativePath)), true, `${relativePath} should exist`);
   }
+});
+
+test('codex provider relay release readiness docs keep unsafe tools disabled by default', () => {
+  const packageRoot = path.resolve(import.meta.dirname, '..');
+  const securityDoc = fs.readFileSync(path.join(packageRoot, 'docs/UNSAFE_TOOL_SECURITY.md'), 'utf8');
+  const releaseDoc = fs.readFileSync(path.join(packageRoot, 'docs/RELEASE_READINESS.md'), 'utf8');
+  const checklist = fs.readFileSync(path.join(packageRoot, 'docs/INDEPENDENT_PACKAGE_CHECKLIST.md'), 'utf8');
+
+  assert.match(securityDoc, /No shell executor is bundled/u);
+  assert.match(securityDoc, /No local computer controller is bundled/u);
+  assert.match(securityDoc, /No code interpreter sandbox is bundled/u);
+  assert.match(releaseDoc, /Keep `private: true`/u);
+  assert.match(releaseDoc, /Final package name and npm scope/u);
+  assert.match(checklist, /final public package name is intentionally not locked/u);
 });

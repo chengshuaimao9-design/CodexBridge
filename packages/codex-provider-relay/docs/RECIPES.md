@@ -70,3 +70,11 @@ codex-provider-relay-server
 ```
 
 Legacy `CODEX_GATEWAY_*` variables remain supported for compatibility.
+
+## Release Validation
+
+Before publishing or wiring a new host application, review:
+
+- [Live smoke recipes](LIVE_SMOKE_RECIPES.md)
+- [Unsafe tool security](UNSAFE_TOOL_SECURITY.md)
+- [Release readiness](RELEASE_READINESS.md)

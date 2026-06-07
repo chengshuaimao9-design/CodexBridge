@@ -28,7 +28,7 @@ Official OpenAI docs checked for this matrix:
 | Tool | OpenAI tool type | Current support | Relay mode | Executor required | Output parity | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | Web search | `web_search` | Partial. `web_search_preview*` aliases normalize to canonical `web_search`; relay executor exists for Tavily, Brave, and Serper. | `provider-native` / `relay-emulated` | Yes for `relay-emulated` | Partial. Current output has answer/results; v2 fields and richer citations are not fully aligned. | P1 |
-| File search | `file_search` | Strong v1. Local-fs, memory, sqlite-fts, in-memory-vector, local-vector, cache fingerprint, RRF, and safety bounds exist. | `relay-emulated` | Yes | Partial. Search result page shape is OpenAI-like, but Responses `include: ["file_search_call.results"]` output parity is not complete. | P1 |
+| File search | `file_search` | Strong v1. Local-fs, memory, sqlite-fts, in-memory-vector, local-vector, cache fingerprint, RRF, safety bounds, vector-store contract, remote-doc contract, and `include: ["file_search_call.results"]` exposure exist. | `relay-emulated` | Yes | Strong relay parity for OpenAI-like `data[]` and synthetic `file_search_call.results`; exact OpenAI-hosted retrieval annotations are not claimed. | P1 done |
 | Tool search | `tool_search` as package-owned deferred discovery surface. | Partial. Registry/converter/server loop support relay-emulated `tool_search`; `createCodexProviderRelayToolSearchExecutor()` can return deferred function tools and namespaces. | `relay-emulated` / client-deferred | Yes | Partial. Returned tools are appended to the next Chat request; no provider-native output item is synthesized. | P2 done |
 | Remote MCP / connectors | `mcp` | No package executor. OpenAI-hosted Responses can use `mcp`; Codex hosts may also handle MCP locally. | `provider-native` / `codex-local-first`; future `relay-emulated` only with explicit host adapter | Yes for relay | No | P2 |
 | Skills | Not an OpenAI Responses hosted tool type; Codex-local customization surface. | No package support. Should stay host/Codex-local unless modeled as deferred tool definitions later. | `codex-local-first` | No package executor by default | Not applicable | P2 |
@@ -149,4 +149,5 @@ The next phase should keep moving heavy or unsafe tools behind explicit executor
 - Done: deprecated `CodexGateway*` aliases remain available for old consumers.
 - Done: new standalone deployments can use `CODEX_PROVIDER_RELAY_*` environment variables.
 - Done: host-neutral examples and recipes exist under `examples/` and `docs/RECIPES.md`.
-- Remaining: live smoke docs, package versioning, release workflow, and external publishing policy.
+- Done: live smoke recipes, unsafe tool security notes, and release-readiness policy docs exist.
+- Remaining: execute live smoke runs, record redacted evidence, and finalize package naming/versioning/release workflow.

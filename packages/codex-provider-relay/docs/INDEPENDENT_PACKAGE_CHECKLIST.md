@@ -13,8 +13,11 @@
 - [x] Unsafe tools have no default executor.
 - [x] No sqlite driver, vector database driver, browser controller, shell sandbox, or image provider dependency is bundled.
 - [x] Examples live outside `src` and do not pull host-app session/UI logic into the package.
-- [ ] Live smoke recipes are verified against real upstream providers.
-- [ ] Package scope, versioning policy, changelog policy, and npm release workflow are decided.
+- [x] Live smoke recipe documentation exists for upstream, web search, file search, image generation, and unsafe-tool default checks.
+- [x] Unsafe tool security notes exist for code interpreter, computer, shell, and apply-patch boundaries.
+- [x] Draft release readiness policy exists.
+- [ ] Live smoke recipes are executed and recorded against real upstream providers.
+- [ ] Package scope, product name, versioning policy, changelog policy, and npm release workflow are decided.
 
 ## Consumer Boundary
 
@@ -42,3 +45,7 @@ The package does not own:
 Prefer adding new root exports over subpath exports until the package reaches a stable semver release. Internal folders can be refactored without breaking consumers as long as the root entrypoint remains compatible.
 
 Deprecated names must stay as type/function aliases for at least one stabilization cycle after the package becomes publishable.
+
+## Current Blocker
+
+The final public package name is intentionally not locked here. Until that decision is made, keep `private: true`, keep `version: "0.0.0"`, and avoid adding new public subpath exports.

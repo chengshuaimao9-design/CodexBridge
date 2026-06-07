@@ -75,3 +75,5 @@ See [docs/OPENAI_BUILTIN_TOOL_COMPATIBILITY.md](docs/OPENAI_BUILTIN_TOOL_COMPATI
 See [docs/RECIPES.md](docs/RECIPES.md) and [examples](examples) for host-neutral integration examples.
 
 See [docs/INDEPENDENT_PACKAGE_CHECKLIST.md](docs/INDEPENDENT_PACKAGE_CHECKLIST.md) for the remaining package readiness gates before `private: true` can be removed.
+
+See [docs/LIVE_SMOKE_RECIPES.md](docs/LIVE_SMOKE_RECIPES.md), [docs/UNSAFE_TOOL_SECURITY.md](docs/UNSAFE_TOOL_SECURITY.md), and [docs/RELEASE_READINESS.md](docs/RELEASE_READINESS.md) for release-readiness validation.

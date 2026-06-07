@@ -41,11 +41,27 @@ export function createCodexProviderRelayMemoryLocalVectorIndexStore(): CodexProv
       }
       return chunks;
     },
+    listDocuments(sourceName: string): CodexProviderRelayLocalVectorIndexDocument[] {
+      return [...documents.values()]
+        .filter((document) => document.sourceName === sourceName)
+        .sort((left, right) => left.path.localeCompare(right.path));
+    },
     deleteDocuments(ids: string[]): void {
       for (const id of ids) {
         documents.delete(id);
         chunksByDocument.delete(id);
       }
+    },
+    deleteStaleDocuments(sourceName: string, liveDocumentIds: string[]): string[] {
+      const liveIds = new Set(liveDocumentIds);
+      const staleIds = [...documents.values()]
+        .filter((document) => document.sourceName === sourceName && !liveIds.has(document.id))
+        .map((document) => document.id);
+      for (const id of staleIds) {
+        documents.delete(id);
+        chunksByDocument.delete(id);
+      }
+      return staleIds;
     },
   };
 }
@@ -98,8 +114,12 @@ export function createCodexProviderRelaySqliteLocalVectorIndexStore(
       await sqliteLocalVectorRun(query, {
         sql: [
           `INSERT INTO ${documentsTable}`,
-          '(id, source_name, root, path, uri, title, filename, size, mtime_ms, content_hash, embedding_model, updated_at)',
-          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            '(id, source_name, root, path, uri, title, filename, size, mtime_ms, content_hash, embedding_model,',
+            'index_version, chunker_version, chunking_config_hash, embedding_dimensions,',
+            'content_hash_algorithm, stat_fingerprint, updated_at)',
+          ].join(' '),
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
           'ON CONFLICT(id) DO UPDATE SET',
           'source_name = excluded.source_name,',
           'root = excluded.root,',
@@ -111,6 +131,12 @@ export function createCodexProviderRelaySqliteLocalVectorIndexStore(
           'mtime_ms = excluded.mtime_ms,',
           'content_hash = excluded.content_hash,',
           'embedding_model = excluded.embedding_model,',
+          'index_version = excluded.index_version,',
+          'chunker_version = excluded.chunker_version,',
+          'chunking_config_hash = excluded.chunking_config_hash,',
+          'embedding_dimensions = excluded.embedding_dimensions,',
+          'content_hash_algorithm = excluded.content_hash_algorithm,',
+          'stat_fingerprint = excluded.stat_fingerprint,',
           'updated_at = excluded.updated_at',
         ].join(' '),
         params: [
@@ -125,6 +151,12 @@ export function createCodexProviderRelaySqliteLocalVectorIndexStore(
           document.mtimeMs,
           document.contentHash,
           document.embeddingModel,
+          document.indexVersion ?? null,
+          document.chunkerVersion ?? null,
+          document.chunkingConfigHash ?? null,
+          document.embeddingDimensions ?? null,
+          document.contentHashAlgorithm ?? null,
+          document.statFingerprint ?? null,
           document.updatedAt,
         ],
       });
@@ -185,6 +217,19 @@ export function createCodexProviderRelaySqliteLocalVectorIndexStore(
       });
       return rows.map(sqliteLocalVectorChunkFromRow).filter(Boolean) as CodexProviderRelayLocalVectorIndexChunk[];
     },
+    async listDocuments(sourceName: string): Promise<CodexProviderRelayLocalVectorIndexDocument[]> {
+      await ensureInitialized();
+      const rows = await sqliteLocalVectorAll(query, {
+        sql: [
+          'SELECT *',
+          `FROM ${documentsTable}`,
+          'WHERE source_name = ?',
+          'ORDER BY path ASC',
+        ].join(' '),
+        params: [sourceName],
+      });
+      return rows.map(sqliteLocalVectorDocumentFromRow).filter(Boolean) as CodexProviderRelayLocalVectorIndexDocument[];
+    },
     async deleteDocuments(ids: string[]): Promise<void> {
       await ensureInitialized();
       for (const id of ids.map(normalizeString).filter(Boolean)) {
@@ -197,6 +242,36 @@ export function createCodexProviderRelaySqliteLocalVectorIndexStore(
           params: [id],
         });
       }
+    },
+    async deleteStaleDocuments(sourceName: string, liveDocumentIds: string[]): Promise<string[]> {
+      await ensureInitialized();
+      const liveIds = new Set(liveDocumentIds.map(normalizeString).filter(Boolean));
+      const rows = await sqliteLocalVectorAll(query, {
+        sql: [
+          'SELECT *',
+          `FROM ${documentsTable}`,
+          'WHERE source_name = ?',
+          'ORDER BY path ASC',
+        ].join(' '),
+        params: [sourceName],
+      });
+      const documents = rows.map(sqliteLocalVectorDocumentFromRow).filter(Boolean) as CodexProviderRelayLocalVectorIndexDocument[];
+      const staleIds = documents
+        .map((document) => document.id)
+        .filter((id) => !liveIds.has(id));
+      if (staleIds.length > 0) {
+        for (const id of staleIds) {
+          await sqliteLocalVectorRun(query, {
+            sql: `DELETE FROM ${chunksTable} WHERE document_id = ?`,
+            params: [id],
+          });
+          await sqliteLocalVectorRun(query, {
+            sql: `DELETE FROM ${documentsTable} WHERE id = ?`,
+            params: [id],
+          });
+        }
+      }
+      return staleIds;
     },
   };
 }
@@ -246,11 +321,23 @@ async function initializeSqliteLocalVectorIndexStore({
       'mtime_ms REAL NOT NULL,',
       'content_hash TEXT NOT NULL,',
       'embedding_model TEXT NOT NULL,',
+      'index_version TEXT,',
+      'chunker_version TEXT,',
+      'chunking_config_hash TEXT,',
+      'embedding_dimensions INTEGER,',
+      'content_hash_algorithm TEXT,',
+      'stat_fingerprint TEXT,',
       'updated_at TEXT NOT NULL',
       ')',
     ].join(' '),
     params: [],
   });
+  await addSqliteLocalVectorDocumentColumnIfMissing(query, documentsTable, 'index_version TEXT');
+  await addSqliteLocalVectorDocumentColumnIfMissing(query, documentsTable, 'chunker_version TEXT');
+  await addSqliteLocalVectorDocumentColumnIfMissing(query, documentsTable, 'chunking_config_hash TEXT');
+  await addSqliteLocalVectorDocumentColumnIfMissing(query, documentsTable, 'embedding_dimensions INTEGER');
+  await addSqliteLocalVectorDocumentColumnIfMissing(query, documentsTable, 'content_hash_algorithm TEXT');
+  await addSqliteLocalVectorDocumentColumnIfMissing(query, documentsTable, 'stat_fingerprint TEXT');
   await sqliteLocalVectorRun(query, {
     sql: [
       `CREATE TABLE IF NOT EXISTS ${chunksTable} (`,
@@ -280,6 +367,22 @@ async function initializeSqliteLocalVectorIndexStore({
   await sqliteLocalVectorRun(query, {
     sql: `CREATE INDEX IF NOT EXISTS ${chunksDocumentIndex} ON ${chunksTable} (document_id)`,
     params: [],
+  });
+}
+
+async function addSqliteLocalVectorDocumentColumnIfMissing(
+  query: CodexProviderRelaySqliteLocalVectorIndexStoreQueryFunction,
+  documentsTable: string,
+  columnDefinition: string,
+): Promise<void> {
+  await sqliteLocalVectorRun(query, {
+    sql: `ALTER TABLE ${documentsTable} ADD COLUMN ${columnDefinition}`,
+    params: [],
+  }).catch((error) => {
+    if (error instanceof Error && /duplicate column|already exists/u.test(error.message.toLowerCase())) {
+      return;
+    }
+    throw error;
   });
 }
 
@@ -330,6 +433,12 @@ function sqliteLocalVectorDocumentFromRow(
     mtimeMs: Number.isFinite(Number(row.mtime_ms)) ? Number(row.mtime_ms) : 0,
     contentHash: normalizeString(row.content_hash),
     embeddingModel: normalizeString(row.embedding_model),
+    indexVersion: normalizeString(row.index_version) || null,
+    chunkerVersion: normalizeString(row.chunker_version) || null,
+    chunkingConfigHash: normalizeString(row.chunking_config_hash) || null,
+    embeddingDimensions: normalizeNonNegativeInteger(row.embedding_dimensions) || null,
+    contentHashAlgorithm: normalizeString(row.content_hash_algorithm) || null,
+    statFingerprint: normalizeString(row.stat_fingerprint) || null,
     updatedAt: normalizeString(row.updated_at),
   };
 }
@@ -364,4 +473,3 @@ function sqliteLocalVectorChunkFromRow(
     metadata,
   };
 }
-

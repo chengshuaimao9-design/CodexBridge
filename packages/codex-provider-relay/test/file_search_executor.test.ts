@@ -103,8 +103,17 @@ function createFakeSqliteLocalVectorDatabase() {
     all(sql: string, params: unknown[] = []): Record<string, unknown>[] {
       statements.push({ operation: 'all', sql, params });
       if (/FROM\s+"[^"]+_documents"/u.test(sql)) {
-        const document = documents.get(String(params[0]));
-        return document ? [document] : [];
+        if (/WHERE\s+id\s+=\s+\?/u.test(sql)) {
+          const document = documents.get(String(params[0]));
+          return document ? [document] : [];
+        }
+        if (/WHERE\s+source_name\s+=\s+\?/u.test(sql)) {
+          const sourceName = String(params[0]);
+          return [...documents.values()]
+            .filter((document) => document.source_name === sourceName)
+            .sort((left, right) => String(left.path).localeCompare(String(right.path)));
+        }
+        return [...documents.values()];
       }
       if (/FROM\s+"[^"]+_chunks"/u.test(sql)) {
         const sourceName = String(params[0]);
@@ -132,6 +141,12 @@ function createFakeSqliteLocalVectorDatabase() {
           mtimeMs,
           contentHash,
           embeddingModel,
+          indexVersion,
+          chunkerVersion,
+          chunkingConfigHash,
+          embeddingDimensions,
+          contentHashAlgorithm,
+          statFingerprint,
           updatedAt,
         ] = params;
         documents.set(String(id), {
@@ -146,6 +161,12 @@ function createFakeSqliteLocalVectorDatabase() {
           mtime_ms: mtimeMs,
           content_hash: contentHash,
           embedding_model: embeddingModel,
+          index_version: indexVersion,
+          chunker_version: chunkerVersion,
+          chunking_config_hash: chunkingConfigHash,
+          embedding_dimensions: embeddingDimensions,
+          content_hash_algorithm: contentHashAlgorithm,
+          stat_fingerprint: statFingerprint,
           updated_at: updatedAt,
         });
         return;
@@ -724,6 +745,176 @@ test('local-vector file_search source chunks files and reuses cached embeddings'
   assert.equal(deltas.some((entry) => entry.delta === 'local vector stale documents removed'), true);
 });
 
+test('local-vector cache fingerprint invalidates legacy documents and chunking changes', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-provider-relay-local-vector-fingerprint-'));
+  await fs.mkdir(path.join(root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(root, 'docs', 'cache.md'), [
+    'invoice payment cache fingerprint target',
+    'invoice payment cache fingerprint target',
+    'invoice payment cache fingerprint target',
+    'invoice payment cache fingerprint target',
+  ].join('\n'));
+  const { provider, embeddedTexts } = createCountingKeywordEmbeddingProvider(['invoice', 'payment']);
+  const store = createCodexProviderRelayMemoryLocalVectorIndexStore();
+  const createExecutor = (maxChars: number) => createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayLocalVectorFileSearchSource({
+        name: 'fingerprint-vector',
+        roots: [root],
+        embeddingProvider: provider,
+        indexStore: store,
+        chunking: {
+          maxChars,
+          overlapChars: 0,
+        },
+      }),
+    ],
+  });
+
+  await createExecutor(800)(baseRequest({ query: 'invoice payment' }));
+  const afterFirstSearchEmbeddings = embeddedTexts.length;
+  const indexedDocuments = await store.listDocuments?.('fingerprint-vector') ?? [];
+  const indexedDocument = indexedDocuments[0];
+  await createExecutor(800)(baseRequest({ query: 'invoice payment' }));
+  const afterCachedSearchEmbeddings = embeddedTexts.length;
+  delete (indexedDocument as any).indexVersion;
+  await createExecutor(800)(baseRequest({ query: 'invoice payment' }));
+  const afterLegacyDocumentSearchEmbeddings = embeddedTexts.length;
+  await createExecutor(450)(baseRequest({ query: 'invoice payment' }));
+  const afterChunkingChangeSearchEmbeddings = embeddedTexts.length;
+  const refreshedDocuments = await store.listDocuments?.('fingerprint-vector') ?? [];
+  const refreshedDocument = refreshedDocuments[0];
+
+  assert.ok(indexedDocument?.contentHash.startsWith('sha256:'));
+  assert.equal(indexedDocument?.contentHashAlgorithm, 'sha256');
+  assert.equal(afterCachedSearchEmbeddings, afterFirstSearchEmbeddings + 1);
+  assert.ok(afterLegacyDocumentSearchEmbeddings > afterCachedSearchEmbeddings + 1);
+  assert.ok(afterChunkingChangeSearchEmbeddings > afterLegacyDocumentSearchEmbeddings + 1);
+  assert.ok(refreshedDocument?.chunkingConfigHash?.startsWith('sha256:'));
+  assert.equal(refreshedDocument?.indexVersion, 'local-vector-index-v1');
+});
+
+test('local-vector content hash invalidates changed files', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-provider-relay-local-vector-content-hash-'));
+  await fs.mkdir(path.join(root, 'docs'), { recursive: true });
+  const filePath = path.join(root, 'docs', 'content.md');
+  await fs.writeFile(filePath, 'invoice cache target\n');
+  const { provider, embeddedTexts } = createCountingKeywordEmbeddingProvider(['invoice', 'payment']);
+  const store = createCodexProviderRelayMemoryLocalVectorIndexStore();
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayLocalVectorFileSearchSource({
+        name: 'content-hash-vector',
+        roots: [root],
+        embeddingProvider: provider,
+        indexStore: store,
+      }),
+    ],
+  });
+
+  await executor(baseRequest({ query: 'invoice payment' }));
+  const statAfterFirstIndex = await fs.stat(filePath);
+  const afterFirstSearchEmbeddings = embeddedTexts.length;
+  const firstDocuments = await store.listDocuments?.('content-hash-vector') ?? [];
+  const firstHash = firstDocuments[0]?.contentHash;
+  await fs.writeFile(filePath, 'payment cache target\n');
+  await fs.utimes(filePath, statAfterFirstIndex.atime, statAfterFirstIndex.mtime);
+  await executor(baseRequest({ query: 'invoice payment' }));
+  const afterContentChangeSearchEmbeddings = embeddedTexts.length;
+  const secondDocuments = await store.listDocuments?.('content-hash-vector') ?? [];
+  const secondHash = secondDocuments[0]?.contentHash;
+
+  assert.notEqual(secondHash, firstHash);
+  assert.ok(afterContentChangeSearchEmbeddings > afterFirstSearchEmbeddings + 1);
+});
+
+test('local-vector indexing fails when embedding provider returns fewer embeddings than requested', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-provider-relay-local-vector-short-embedding-'));
+  await fs.mkdir(path.join(root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(root, 'docs', 'bad.md'), Array.from(
+    { length: 20 },
+    () => 'invoice payment '.repeat(20),
+  ).join('\n'));
+  const provider: CodexProviderRelayEmbeddingProvider = {
+    model: 'bad-short-embedding',
+    embed(input) {
+      if (input.length === 1) {
+        return {
+          model: 'bad-short-embedding',
+          dimensions: 2,
+          embeddings: [[1, 0]],
+        };
+      }
+      return {
+        model: 'bad-short-embedding',
+        dimensions: 2,
+        embeddings: input.slice(1).map(() => [1, 0]),
+      };
+    },
+  };
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayLocalVectorFileSearchSource({
+        name: 'bad-short',
+        roots: [root],
+        embeddingProvider: provider,
+        chunking: {
+          maxChars: 400,
+          overlapChars: 0,
+        },
+      }),
+    ],
+  });
+
+  await assert.rejects(
+    executor(baseRequest({ query: 'invoice payment' })),
+    /returned \d+ embeddings for \d+ inputs/u,
+  );
+});
+
+test('local-vector indexing fails when embedding dimensions are inconsistent', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-provider-relay-local-vector-dimension-'));
+  await fs.mkdir(path.join(root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(root, 'docs', 'bad.md'), Array.from(
+    { length: 20 },
+    () => 'invoice payment '.repeat(20),
+  ).join('\n'));
+  const provider: CodexProviderRelayEmbeddingProvider = {
+    model: 'bad-dimension-embedding',
+    embed(input) {
+      if (input.length === 1) {
+        return {
+          model: 'bad-dimension-embedding',
+          dimensions: 2,
+          embeddings: [[1, 0]],
+        };
+      }
+      return {
+        model: 'bad-dimension-embedding',
+        embeddings: input.map((_, index) => index === 0 ? [1, 0] : [1, 0, 0]),
+      };
+    },
+  };
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayLocalVectorFileSearchSource({
+        name: 'bad-dimension',
+        roots: [root],
+        embeddingProvider: provider,
+        chunking: {
+          maxChars: 400,
+          overlapChars: 0,
+        },
+      }),
+    ],
+  });
+
+  await assert.rejects(
+    executor(baseRequest({ query: 'invoice payment' })),
+    /embedding dimension 3 at index 1; expected 2/u,
+  );
+});
+
 test('local-vector source honors hybrid_search weights', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-provider-relay-local-vector-hybrid-'));
   await fs.mkdir(path.join(root, 'docs'), { recursive: true });
@@ -773,6 +964,111 @@ test('local-vector source honors hybrid_search weights', async () => {
   assert.equal(textContent.data[0].filename, 'lexical.md');
 });
 
+test('local-vector source supports rrf hybrid ranker', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-provider-relay-local-vector-rrf-'));
+  await fs.mkdir(path.join(root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(root, 'docs', 'semantic.md'), 'semantic semantic semantic');
+  await fs.writeFile(path.join(root, 'docs', 'balanced.md'), 'semantic queryterm queryterm');
+  await fs.writeFile(path.join(root, 'docs', 'lexical.md'), 'queryterm queryterm queryterm queryterm queryterm');
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [{
+      type: 'local-vector',
+      name: 'local-rrf',
+      roots: [root],
+      embeddingProvider: createKeywordEmbeddingProvider(['semantic']),
+      indexStore: createCodexProviderRelayMemoryLocalVectorIndexStore(),
+      vectorWeight: 1,
+      textWeight: 1,
+    }],
+    maxResults: 3,
+  });
+
+  const result = await executor(baseRequest({
+    query: 'semantic queryterm',
+    ranking_options: {
+      ranker: 'rrf',
+      hybrid_search: {
+        rrf_embedding_weight: 1,
+        rrf_text_weight: 1,
+      },
+    },
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.equal(content.data[0].filename, 'balanced.md');
+});
+
+test('local-vector index store exposes documents and prefers searchChunks when available', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-provider-relay-local-vector-search-chunks-'));
+  await fs.mkdir(path.join(root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(root, 'docs', 'invoice.md'), 'invoice payment semantic target');
+  const backingStore = createCodexProviderRelayMemoryLocalVectorIndexStore();
+  let searchChunksCalls = 0;
+  const store = {
+    ...backingStore,
+    searchChunks(request: any) {
+      searchChunksCalls += 1;
+      assert.equal(request.sourceName, 'search-pref');
+      assert.equal(request.query, 'invoice payment');
+      return backingStore.listChunks(request.sourceName);
+    },
+  };
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayLocalVectorFileSearchSource({
+        name: 'search-pref',
+        roots: [root],
+        embeddingProvider: createKeywordEmbeddingProvider(['invoice', 'payment']),
+        indexStore: store,
+      }),
+    ],
+  });
+
+  const result = await executor(baseRequest({
+    query: 'invoice payment',
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+  const listedDocuments = backingStore.listDocuments?.('search-pref') ?? [];
+
+  assert.equal(content.data[0].filename, 'invoice.md');
+  assert.equal(searchChunksCalls, 1);
+  assert.equal(listedDocuments.length, 1);
+  assert.equal(listedDocuments[0].path, 'docs/invoice.md');
+});
+
+test('local-vector search skips stored chunks with mismatched embedding dimensions', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-provider-relay-local-vector-old-dimension-'));
+  await fs.mkdir(path.join(root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(root, 'docs', 'invoice.md'), 'invoice payment semantic target');
+  const backingStore = createCodexProviderRelayMemoryLocalVectorIndexStore();
+  const store = {
+    ...backingStore,
+    searchChunks(request: any) {
+      return backingStore.listChunks(request.sourceName).map((chunk) => ({
+        ...chunk,
+        embedding: [1, 0, 0],
+      }));
+    },
+  };
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayLocalVectorFileSearchSource({
+        name: 'old-dimension',
+        roots: [root],
+        embeddingProvider: createKeywordEmbeddingProvider(['invoice', 'payment']),
+        indexStore: store,
+      }),
+    ],
+  });
+
+  const result = await executor(baseRequest({
+    query: 'invoice payment',
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.equal(content.data.length, 0);
+});
+
 test('sqlite local-vector index store persists documents and chunks', async () => {
   const { database, statements } = createFakeSqliteLocalVectorDatabase();
   const store = createCodexProviderRelaySqliteLocalVectorIndexStore({
@@ -815,10 +1111,13 @@ test('sqlite local-vector index store persists documents and chunks', async () =
   await store.upsertDocument(document, [chunk]);
   const loadedDocument = await store.getDocument('doc-1');
   const loadedChunks = await store.listChunks('sqlite-vector');
+  const loadedDocuments = await store.listDocuments?.('sqlite-vector');
   await store.deleteDocuments(['doc-1']);
 
   assert.equal(loadedDocument?.path, 'docs/sqlite-vector.md');
   assert.equal(loadedDocument?.embeddingModel, 'test-embedding');
+  assert.equal(loadedDocuments?.length, 1);
+  assert.equal(loadedDocuments?.[0]?.path, 'docs/sqlite-vector.md');
   assert.equal(loadedChunks.length, 1);
   assert.deepEqual(loadedChunks[0].embedding, [1, 0, 0]);
   assert.equal(loadedChunks[0].metadata?.category, 'docs');

@@ -205,6 +205,12 @@ export interface CodexProviderRelayLocalVectorIndexDocument {
   mtimeMs: number;
   contentHash: string;
   embeddingModel: string;
+  indexVersion?: string | null;
+  chunkerVersion?: string | null;
+  chunkingConfigHash?: string | null;
+  embeddingDimensions?: number | null;
+  contentHashAlgorithm?: string | null;
+  statFingerprint?: string | null;
   updatedAt: string;
 }
 
@@ -225,6 +231,16 @@ export interface CodexProviderRelayLocalVectorIndexChunk {
   metadata?: JsonRecord | null;
 }
 
+export interface CodexProviderRelayLocalVectorIndexSearchChunksRequest {
+  sourceName: string;
+  query: string;
+  terms: string[];
+  pathGlob: string;
+  queryEmbedding: number[];
+  maxResults: number;
+  rankingOptions: CodexProviderRelayFileSearchRankingOptions;
+}
+
 export interface CodexProviderRelayLocalVectorIndexStore {
   getDocument(
     id: string,
@@ -236,7 +252,14 @@ export interface CodexProviderRelayLocalVectorIndexStore {
   listChunks(
     sourceName: string,
   ): Promise<CodexProviderRelayLocalVectorIndexChunk[]> | CodexProviderRelayLocalVectorIndexChunk[];
+  listDocuments?(
+    sourceName: string,
+  ): Promise<CodexProviderRelayLocalVectorIndexDocument[]> | CodexProviderRelayLocalVectorIndexDocument[];
+  searchChunks?(
+    request: CodexProviderRelayLocalVectorIndexSearchChunksRequest,
+  ): Promise<CodexProviderRelayLocalVectorIndexChunk[]> | CodexProviderRelayLocalVectorIndexChunk[];
   deleteDocuments?(ids: string[]): Promise<void> | void;
+  deleteStaleDocuments?(sourceName: string, liveDocumentIds: string[]): Promise<string[]> | string[];
 }
 
 export interface CodexProviderRelaySqliteLocalVectorIndexStoreDatabase {

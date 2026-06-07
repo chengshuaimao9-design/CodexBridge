@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -404,12 +405,8 @@ export function stableFileSearchFileId(sourceName: string, resultPath: string): 
 }
 
 export function stableContentHash(content: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < content.length; index += 1) {
-    hash ^= content.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `fnv1a_${(hash >>> 0).toString(16).padStart(8, '0')}_${Buffer.byteLength(content, 'utf8')}`;
+  const bytes = Buffer.from(content, 'utf8');
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}:${bytes.byteLength}`;
 }
 
 

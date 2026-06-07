@@ -3,3 +3,5 @@ export { createCodexProviderRelayLocalVectorFileSearchSource } from './sources/l
 export { createCodexProviderRelayMemoryFileSearchSource } from './sources/memory.js';
 export { createCodexProviderRelaySqliteFtsFileSearchSource } from './sources/sqlite-fts.js';
 export { createCodexProviderRelayInMemoryVectorFileSearchSource } from './sources/in-memory-vector.js';
+export { createCodexProviderRelayVectorStoreFileSearchSource } from './sources/vector-store.js';
+export { createCodexProviderRelayRemoteDocumentsFileSearchSource } from './sources/remote-documents.js';

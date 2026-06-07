@@ -101,6 +101,144 @@ test('responses conversion exposes relay-emulated file_search as a Chat function
   });
 });
 
+test('responses conversion exposes relay-emulated tool_search as a deferred Chat function tool', () => {
+  const chat = responsesRequestToChatCompletions({
+    model: 'example-model',
+    input: 'find the right tool',
+    tools: [{
+      type: 'tool_search',
+    }],
+    tool_choice: 'tool_search',
+  }, {
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'tool_search',
+      mode: 'relay-emulated',
+      providerToolName: null,
+      relayToolName: 'relay_tool_search',
+      description: 'Discover deferred tools.',
+    }],
+  });
+
+  assert.equal(chat.tools[0].type, 'function');
+  assert.equal(chat.tools[0].function.name, 'relay_tool_search');
+  assert.equal(chat.tools[0].function.parameters.properties.query.type, 'string');
+  assert.equal(chat.tools[0].function.parameters.properties.goal.type, 'string');
+  assert.deepEqual(chat.tool_choice, {
+    type: 'function',
+    function: {
+      name: 'relay_tool_search',
+    },
+  });
+});
+
+test('responses conversion exposes relay-emulated image_generation as a Chat function tool', () => {
+  const chat = responsesRequestToChatCompletions({
+    model: 'example-model',
+    input: 'generate an image',
+    tools: [{
+      type: 'image_generation',
+    }],
+    tool_choice: 'image_generation',
+  }, {
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'image_generation',
+      mode: 'relay-emulated',
+      providerToolName: null,
+      relayToolName: 'relay_image_generation',
+      description: 'Generate images through the relay.',
+    }],
+  });
+
+  assert.equal(chat.tools[0].type, 'function');
+  assert.equal(chat.tools[0].function.name, 'relay_image_generation');
+  assert.equal(chat.tools[0].function.parameters.required[0], 'prompt');
+  assert.equal(chat.tools[0].function.parameters.properties.output_format.type, 'string');
+  assert.deepEqual(chat.tool_choice, {
+    type: 'function',
+    function: {
+      name: 'relay_image_generation',
+    },
+  });
+});
+
+test('responses conversion does not expose image_generation without a relay declaration', () => {
+  const chat = responsesRequestToChatCompletions({
+    model: 'example-model',
+    input: 'generate an image',
+    tools: [{
+      type: 'image_generation',
+    }],
+    tool_choice: 'image_generation',
+  }, {
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [],
+  });
+
+  assert.equal(chat.tools, undefined);
+  assert.equal(chat.tool_choice, undefined);
+});
+
+test('responses conversion exposes relay-emulated code_interpreter as a Chat function tool', () => {
+  const chat = responsesRequestToChatCompletions({
+    model: 'example-model',
+    input: 'run code',
+    tools: [{
+      type: 'code_interpreter',
+    }],
+    tool_choice: 'code_interpreter',
+  }, {
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'code_interpreter',
+      mode: 'relay-emulated',
+      providerToolName: null,
+      relayToolName: 'relay_code_interpreter',
+      description: 'Run code through an explicit sandbox.',
+    }],
+  });
+
+  assert.equal(chat.tools[0].type, 'function');
+  assert.equal(chat.tools[0].function.name, 'relay_code_interpreter');
+  assert.equal(chat.tools[0].function.parameters.required[0], 'code');
+  assert.equal(chat.tools[0].function.parameters.properties.language.type, 'string');
+  assert.equal(chat.tools[0].function.parameters.properties.files.type, 'array');
+  assert.deepEqual(chat.tool_choice, {
+    type: 'function',
+    function: {
+      name: 'relay_code_interpreter',
+    },
+  });
+});
+
+test('responses conversion does not expose code_interpreter without a relay declaration', () => {
+  const chat = responsesRequestToChatCompletions({
+    model: 'example-model',
+    input: 'run code',
+    tools: [{
+      type: 'code_interpreter',
+    }],
+    tool_choice: 'code_interpreter',
+  }, {
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [],
+  });
+
+  assert.equal(chat.tools, undefined);
+  assert.equal(chat.tool_choice, undefined);
+});
+
 test('chat response conversion is available from the package boundary', () => {
   const response = chatCompletionsResponseToResponses({
     id: 'chatcmpl_test',

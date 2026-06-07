@@ -25,6 +25,12 @@ import {
 import type {
   NormalizedCodexProviderRelayHostedToolDeclaration,
 } from '../hosted_tools.js';
+import {
+  codexProviderRelayBuiltinToolParameters,
+  defaultCodexProviderRelayBuiltinToolDescription,
+  isCodexProviderRelayRelayEmulatedBuiltinToolType,
+  normalizeCodexProviderRelayBuiltinToolName,
+} from '../builtin-tools/index.js';
 
 type JsonRecord = Record<string, any>;
 type ToolNameMap = Map<string, string>;
@@ -1324,87 +1330,11 @@ function buildRelayEmulatedHostedChatTool(
 }
 
 function defaultRelayHostedToolDescription(name: string): string {
-  switch (name) {
-    case 'file_search':
-      return 'Search explicitly configured file-search sources and return OpenAI-compatible file chunks.';
-    case 'web_search':
-    default:
-      return 'Search the web for current information and return concise cited results.';
-  }
+  return defaultCodexProviderRelayBuiltinToolDescription(name);
 }
 
 function relayHostedToolParameters(name: string): JsonRecord {
-  if (name === 'file_search') {
-    return {
-      type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description: 'The file search query.',
-        },
-        path_glob: {
-          type: 'string',
-          description: 'Optional glob-style path filter within configured roots.',
-        },
-        max_results: {
-          type: 'integer',
-          minimum: 1,
-          maximum: 50,
-          description: 'Maximum number of matching file search results to return.',
-        },
-        max_num_results: {
-          type: 'integer',
-          minimum: 1,
-          maximum: 50,
-          description: 'OpenAI-compatible maximum number of file search results to return.',
-        },
-        vector_store_ids: {
-          type: 'array',
-          items: {
-            type: 'string',
-          },
-          description: 'Optional OpenAI-compatible vector store ids. In relay-emulated mode these map to configured source names.',
-        },
-        filters: {
-          type: 'object',
-          description: 'Optional OpenAI-compatible metadata filter tree using eq/ne/gt/gte/lt/lte/in/nin and and/or.',
-          additionalProperties: true,
-        },
-        ranking_options: {
-          type: 'object',
-          description: 'Optional OpenAI-compatible ranking options, including ranker, score_threshold, and hybrid_search weights.',
-          additionalProperties: true,
-        },
-        include_content: {
-          type: 'boolean',
-          description: 'Whether to include retrieved chunk text in results.',
-        },
-      },
-      required: ['query'],
-      additionalProperties: true,
-    };
-  }
-  return {
-    type: 'object',
-    properties: {
-      query: {
-        type: 'string',
-        description: 'The web search query.',
-      },
-      search_context_size: {
-        type: 'string',
-        enum: ['low', 'medium', 'high'],
-        description: 'Requested search depth when available.',
-      },
-      user_location: {
-        type: 'object',
-        description: 'Optional user location hints from the original request.',
-        additionalProperties: true,
-      },
-    },
-    required: ['query'],
-    additionalProperties: true,
-  };
+  return codexProviderRelayBuiltinToolParameters(name);
 }
 
 function buildForcedFunctionToolChoice(functionName: string): JsonRecord {
@@ -1417,39 +1347,16 @@ function buildForcedFunctionToolChoice(functionName: string): JsonRecord {
 }
 
 function isBuiltinToolType(type: unknown): boolean {
-  switch (normalizeString(type)) {
-    case 'web_search':
-    case 'web_search_preview':
-    case 'web_search_preview_2025_03_11':
-    case 'file_search':
-      return true;
-    default:
-      return false;
-  }
+  const normalizedName = normalizeCodexProviderRelayBuiltinToolName(type);
+  return normalizedName === 'web_search' || normalizedName === 'file_search';
 }
 
 function isRelayHostedBuiltinToolType(type: unknown): boolean {
-  switch (normalizeRelayHostedToolBuiltinType(type)) {
-    case 'web_search':
-    case 'file_search':
-      return true;
-    default:
-      return false;
-  }
+  return isCodexProviderRelayRelayEmulatedBuiltinToolType(type);
 }
 
 function normalizeRelayHostedToolBuiltinType(type: unknown): string {
-  const normalized = normalizeString(type);
-  switch (normalized) {
-    case 'web_search':
-    case 'web_search_preview':
-    case 'web_search_preview_2025_03_11':
-      return 'web_search';
-    case 'file_search':
-      return 'file_search';
-    default:
-      return normalized;
-  }
+  return normalizeCodexProviderRelayBuiltinToolName(type) ?? normalizeString(type);
 }
 
 function supportsBuiltinWebSearchTool(
@@ -1472,22 +1379,26 @@ function resolveBuiltinWebSearchTransport(
 }
 
 function requestUsesBuiltinWebSearch(request: JsonRecord): boolean {
-  if (normalizeArray(request?.tools).some((tool) => isBuiltinToolType(tool?.type))) {
+  if (normalizeArray(request?.tools).some((tool) => isBuiltinWebSearchToolType(tool?.type))) {
     return true;
   }
   const toolChoice = request?.tool_choice;
   if (typeof toolChoice === 'string') {
-    return isBuiltinToolType(toolChoice);
+    return isBuiltinWebSearchToolType(toolChoice);
   }
   if (toolChoice && typeof toolChoice === 'object') {
-    if (isBuiltinToolType((toolChoice as JsonRecord).type)) {
+    if (isBuiltinWebSearchToolType((toolChoice as JsonRecord).type)) {
       return true;
     }
     if (normalizeString((toolChoice as JsonRecord).type) === 'allowed_tools') {
-      return normalizeArray((toolChoice as JsonRecord).tools).some((tool) => isBuiltinToolType(tool?.type));
+      return normalizeArray((toolChoice as JsonRecord).tools).some((tool) => isBuiltinWebSearchToolType(tool?.type));
     }
   }
   return false;
+}
+
+function isBuiltinWebSearchToolType(type: unknown): boolean {
+  return normalizeCodexProviderRelayBuiltinToolName(type) === 'web_search';
 }
 
 function translateChatCompletionStreamData(data: string, state: StreamState): JsonRecord[] {

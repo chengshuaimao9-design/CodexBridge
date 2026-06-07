@@ -11,8 +11,10 @@ import {
   createCodexProviderRelayMemoryLocalVectorIndexStore,
   createCodexProviderRelayMemoryFileSearchSource,
   createCodexProviderRelayOpenRouterEmbeddingProvider,
+  createCodexProviderRelayRemoteDocumentsFileSearchSource,
   createCodexProviderRelaySqliteLocalVectorIndexStore,
   createCodexProviderRelaySqliteFtsFileSearchSource,
+  createCodexProviderRelayVectorStoreFileSearchSource,
   type CodexProviderRelayEmbeddingProvider,
   type CodexProviderRelayFileSearchExecutorContent,
   type CodexProviderRelayFileSearchSource,
@@ -431,6 +433,204 @@ test('file_search executor applies vector store ids, filters, and ranking thresh
   assert.equal(content.data[0].attributes.path, 'docs/strong.md');
   assert.equal(content.data[0].filename, 'strong.md');
   assert.equal(content.data.some((entry) => entry.filename === 'other.md'), false);
+});
+
+test('file_search executor applies nested metadata filter parity', async () => {
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayMemoryFileSearchSource({
+        name: 'filter-store',
+        documents: [{
+          id: 'match',
+          title: 'Hybrid alpha beta guide',
+          path: 'docs/match.md',
+          content: 'alpha beta target',
+          metadata: {
+            category: 'docs',
+            tags: ['agent', 'relay'],
+            priority: 9,
+          },
+        }, {
+          id: 'wrong-array',
+          title: 'Hybrid alpha beta guide',
+          path: 'docs/wrong-array.md',
+          content: 'alpha beta target',
+          metadata: {
+            category: 'docs',
+            tags: ['archive'],
+            priority: 9,
+          },
+        }, {
+          id: 'missing-key',
+          title: 'Hybrid alpha beta guide',
+          path: 'docs/missing-key.md',
+          content: 'alpha beta target',
+          metadata: {
+            category: 'docs',
+            priority: 9,
+          },
+        }, {
+          id: 'low-priority',
+          title: 'Hybrid alpha beta guide',
+          path: 'docs/low-priority.md',
+          content: 'alpha beta target',
+          metadata: {
+            category: 'docs',
+            tags: ['agent', 'relay'],
+            priority: 2,
+          },
+        }],
+      }),
+    ],
+    maxResults: 10,
+  });
+
+  const result = await executor(baseRequest({
+    query: 'alpha beta target',
+    filters: {
+      type: 'and',
+      filters: [
+        { type: 'eq', property: 'category', value: 'docs' },
+        { type: 'in', key: 'tags', value: ['relay'] },
+        { type: 'gt', key: 'priority', value: 5 },
+        {
+          type: 'or',
+          filters: [
+            { type: 'eq', key: 'path', value: 'docs/match.md' },
+            { type: 'eq', key: 'missing_key', value: 'allowed' },
+          ],
+        },
+      ],
+    },
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.equal(content.data.length, 1);
+  assert.equal(content.data[0].filename, 'match.md');
+  assert.equal(content.data[0].attributes.priority, 9);
+});
+
+test('vector-store file_search source delegates to host adapter contract', async () => {
+  const adapterRequests: any[] = [];
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayVectorStoreFileSearchSource({
+        name: 'vector-contract',
+        store: {
+          search(request) {
+            adapterRequests.push(JSON.parse(JSON.stringify({
+              sourceName: request.sourceName,
+              query: request.query,
+              vectorStoreIds: request.vectorStoreIds,
+              maxResults: request.maxResults,
+              includeContent: request.includeContent,
+            })));
+            return {
+              results: [{
+                file_id: 'file_vector_contract',
+                filename: 'vector.md',
+                title: 'Vector adapter document',
+                uri: 'vector://doc-1',
+                path: 'docs/vector.md',
+                source: request.sourceName,
+                sourceType: 'vector-store',
+                score: 42,
+                attributes: {
+                  category: 'contract',
+                },
+                content: [{
+                  type: 'text',
+                  text: 'vector adapter alpha beta result',
+                  start_line: 1,
+                  end_line: 1,
+                }],
+              }],
+              scannedFiles: 1,
+              skippedFiles: 0,
+            };
+          },
+        },
+      }),
+    ],
+  });
+
+  const result = await executor(baseRequest({
+    query: 'alpha beta',
+    vector_store_ids: ['vector-contract'],
+    max_num_results: 3,
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.deepEqual(adapterRequests, [{
+    sourceName: 'vector-contract',
+    query: 'alpha beta',
+    vectorStoreIds: ['vector-contract'],
+    maxResults: 3,
+    includeContent: null,
+  }]);
+  assert.equal(content.provider, 'vector-store');
+  assert.equal(content.data.length, 1);
+  assert.equal(content.data[0].file_id, 'file_vector_contract');
+  assert.equal(content.data[0].attributes.source_type, 'vector-store');
+  assert.equal(content.data[0].content[0].type, 'text');
+});
+
+test('remote-documents file_search source queries and hydrates remote content', async () => {
+  const queryRequests: any[] = [];
+  const fetchRequests: any[] = [];
+  const executor = createCodexProviderRelayFileSearchExecutor({
+    sources: [
+      createCodexProviderRelayRemoteDocumentsFileSearchSource({
+        name: 'remote-docs',
+        query(request) {
+          queryRequests.push(JSON.parse(JSON.stringify({
+            sourceName: request.sourceName,
+            query: request.query,
+            pathGlob: request.pathGlob,
+            includeContent: request.includeContent,
+          })));
+          return [{
+            id: 'remote-1',
+            title: 'Remote alpha beta document',
+            path: 'remote/alpha.md',
+            uri: 'https://docs.example.com/alpha',
+            snippet: 'alpha beta teaser',
+            metadata: {
+              category: 'remote',
+            },
+          }, {
+            id: 'remote-2',
+            title: 'Remote ignored document',
+            path: 'archive/ignored.md',
+            snippet: 'alpha beta ignored',
+          }];
+        },
+        fetchDocument(request) {
+          fetchRequests.push(request.document.id);
+          return 'full remote alpha beta content with enough detail';
+        },
+      }),
+    ],
+  });
+
+  const result = await executor(baseRequest({
+    query: 'alpha beta',
+    path_glob: 'remote/*',
+  }));
+  const content = result.content as CodexProviderRelayFileSearchExecutorContent;
+
+  assert.deepEqual(queryRequests, [{
+    sourceName: 'remote-docs',
+    query: 'alpha beta',
+    pathGlob: 'remote/*',
+    includeContent: true,
+  }]);
+  assert.deepEqual(fetchRequests, ['remote-1']);
+  assert.equal(content.provider, 'remote-documents');
+  assert.equal(content.data.length, 1);
+  assert.equal(content.data[0].filename, 'alpha.md');
+  assert.equal(content.data[0].attributes.remote_id, 'remote-1');
+  assert.match(content.data[0].content.map((chunk) => chunk.text).join('\n'), /full remote alpha beta/u);
 });
 
 test('memory file_search source searches title and content with optional chunks', async () => {

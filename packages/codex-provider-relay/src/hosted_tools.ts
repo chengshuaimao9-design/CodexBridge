@@ -1,13 +1,18 @@
 import type {
   CodexProviderRelayToolStrategy,
 } from './types.js';
+import {
+  defaultCodexProviderRelayBuiltinRelayToolName,
+  normalizeCodexProviderRelayBuiltinToolName,
+  type CodexProviderRelayBuiltinToolName,
+} from './builtin-tools/index.js';
 
 export type CodexProviderRelayHostedToolName =
-  | 'web_search'
-  | 'file_search'
+  | CodexProviderRelayBuiltinToolName
+  | 'web_search_preview'
+  | 'web_search_preview_2025_03_11'
   | 'computer_use'
-  | 'code_interpreter'
-  | 'image_generation'
+  | 'computer_use_preview'
   | `custom:${string}`;
 
 export type CodexProviderRelayHostedToolMode =
@@ -65,7 +70,8 @@ function normalizeHostedToolDeclaration(
   const name = normalizeHostedToolName(declaration.name);
   const mode = normalizeHostedToolMode(declaration.mode);
   const providerToolName = normalizeString(declaration.providerToolName) || (mode === 'provider-native' ? name : '');
-  const relayToolName = normalizeString(declaration.relayToolName) || (mode === 'relay-emulated' ? name : '');
+  const relayToolName = normalizeString(declaration.relayToolName)
+    || (mode === 'relay-emulated' ? defaultHostedRelayToolName(name) : '');
   return {
     name,
     mode,
@@ -77,17 +83,20 @@ function normalizeHostedToolDeclaration(
 
 function normalizeHostedToolName(name: unknown): CodexProviderRelayHostedToolName {
   const normalized = normalizeString(name);
-  if (
-    normalized === 'web_search'
-    || normalized === 'file_search'
-    || normalized === 'computer_use'
-    || normalized === 'code_interpreter'
-    || normalized === 'image_generation'
-    || /^custom:[A-Za-z0-9_.-]+$/u.test(normalized)
-  ) {
-    return normalized as CodexProviderRelayHostedToolName;
+  const builtinName = normalizeCodexProviderRelayBuiltinToolName(normalized);
+  if (builtinName) {
+    return builtinName;
+  }
+  if (/^custom:[A-Za-z0-9_.-]+$/u.test(normalized)) {
+    return normalized as `custom:${string}`;
   }
   throw new Error(`Unsupported hosted tool name: ${String(name)}`);
+}
+
+function defaultHostedRelayToolName(name: CodexProviderRelayHostedToolName): string {
+  return name.startsWith('custom:')
+    ? name.slice('custom:'.length)
+    : defaultCodexProviderRelayBuiltinRelayToolName(name);
 }
 
 function normalizeHostedToolMode(mode: unknown): CodexProviderRelayHostedToolMode {

@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   buildOpenAICompatibleChatCompletionsUrl,
   buildOpenAICompatibleModelsUrl,
+  createCodexProviderRelayCodeInterpreterExecutor,
   isOpenAICompatibleChatCompletionsProxyPath,
   isOpenAICompatibleModelsProxyPath,
   isOpenAICompatibleResponsesProxyPath,
@@ -1030,6 +1031,424 @@ test('adapter server executes relay-emulated web_search inside the Chat Completi
   }
 });
 
+test('adapter server appends deferred tools returned by relay-emulated tool_search', async () => {
+  const upstreamRequests: any[] = [];
+  const executedRequests: any[] = [];
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'tool_search',
+      mode: 'relay-emulated',
+      relayToolName: 'relay_tool_search',
+    }],
+    hostedToolExecutors: {
+      tool_search: async (request) => {
+        executedRequests.push(JSON.parse(JSON.stringify(request)));
+        return {
+          content: {
+            tools: [{
+              type: 'function',
+              function: {
+                name: 'lookup_docs',
+                description: 'Look up documentation.',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    query: { type: 'string' },
+                  },
+                  required: ['query'],
+                },
+              },
+            }],
+          },
+        };
+      },
+    },
+    fetchImpl: (async (_url, init) => {
+      const requestBody = JSON.parse(String(init?.body ?? '{}'));
+      upstreamRequests.push(requestBody);
+      if (upstreamRequests.length === 1) {
+        assert.equal(requestBody.tools.length, 1);
+        assert.equal(requestBody.tools[0].function.name, 'relay_tool_search');
+        assert.deepEqual(requestBody.tool_choice, {
+          type: 'function',
+          function: {
+            name: 'relay_tool_search',
+          },
+        });
+        return new Response(JSON.stringify({
+          id: 'chatcmpl_tool_search_1',
+          created: 1_700_000_491,
+          model: 'relay-tool-search-model',
+          choices: [{
+            message: {
+              tool_calls: [{
+                id: 'call_tool_search_1',
+                type: 'function',
+                function: {
+                  name: 'relay_tool_search',
+                  arguments: '{"query":"documentation"}',
+                },
+              }],
+            },
+            finish_reason: 'tool_calls',
+          }],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      assert.equal(requestBody.messages.at(-2).tool_calls[0].function.name, 'relay_tool_search');
+      assert.equal(requestBody.messages.at(-1).role, 'tool');
+      assert.equal(requestBody.messages.at(-1).tool_call_id, 'call_tool_search_1');
+      assert.equal(requestBody.tools.some((tool: any) => tool.function?.name === 'relay_tool_search'), true);
+      assert.equal(requestBody.tools.some((tool: any) => tool.function?.name === 'lookup_docs'), true);
+      assert.equal(requestBody.tool_choice, undefined);
+      return new Response(JSON.stringify({
+        id: 'chatcmpl_tool_search_2',
+        created: 1_700_000_492,
+        model: 'relay-tool-search-model',
+        choices: [{
+          message: {
+            tool_calls: [{
+              id: 'call_lookup_docs_1',
+              type: 'function',
+              function: {
+                name: 'lookup_docs',
+                arguments: '{"query":"documentation"}',
+              },
+            }],
+          },
+          finish_reason: 'tool_calls',
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'relay-tool-search-model',
+        input: 'Find a documentation tool.',
+        tools: [{
+          type: 'tool_search',
+        }],
+        tool_choice: 'tool_search',
+      }),
+    });
+    const body = await response.json() as any;
+    assert.equal(response.status, 200);
+    assert.equal(upstreamRequests.length, 2);
+    assert.equal(executedRequests.length, 1);
+    assert.equal(executedRequests[0].toolName, 'tool_search');
+    assert.equal(executedRequests[0].arguments.query, 'documentation');
+    assert.equal(body.output[0].type, 'function_call');
+    assert.equal(body.output[0].name, 'lookup_docs');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('adapter server executes relay-emulated image_generation and can expose image output', async () => {
+  const upstreamRequests: any[] = [];
+  const executedRequests: any[] = [];
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'image_generation',
+      mode: 'relay-emulated',
+      relayToolName: 'relay_image_generation',
+    }],
+    hostedToolExecutors: {
+      image_generation: async (request) => {
+        executedRequests.push(JSON.parse(JSON.stringify(request)));
+        return {
+          content: {
+            prompt: request.arguments.prompt,
+            images: [{
+              b64_json: 'aW1hZ2U=',
+              mime_type: 'image/png',
+              revised_prompt: 'A relay bridge over water.',
+            }],
+          },
+        };
+      },
+    },
+    fetchImpl: (async (_url, init) => {
+      const requestBody = JSON.parse(String(init?.body ?? '{}'));
+      upstreamRequests.push(requestBody);
+      if (upstreamRequests.length === 1) {
+        assert.equal(requestBody.tools[0].function.name, 'relay_image_generation');
+        assert.deepEqual(requestBody.tool_choice, {
+          type: 'function',
+          function: {
+            name: 'relay_image_generation',
+          },
+        });
+        return new Response(JSON.stringify({
+          id: 'chatcmpl_image_1',
+          created: 1_700_000_501,
+          model: 'relay-image-model',
+          choices: [{
+            message: {
+              tool_calls: [{
+                id: 'call_image_1',
+                type: 'function',
+                function: {
+                  name: 'relay_image_generation',
+                  arguments: '{"prompt":"a relay bridge","size":"1024x1024","output_format":"png","n":1}',
+                },
+              }],
+            },
+            finish_reason: 'tool_calls',
+          }],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      assert.equal(requestBody.messages.at(-2).tool_calls[0].function.name, 'relay_image_generation');
+      assert.equal(requestBody.messages.at(-1).role, 'tool');
+      assert.equal(requestBody.messages.at(-1).tool_call_id, 'call_image_1');
+      assert.match(requestBody.messages.at(-1).content, /aW1hZ2U=/u);
+      return new Response(JSON.stringify({
+        id: 'chatcmpl_image_2',
+        created: 1_700_000_502,
+        model: 'relay-image-model',
+        choices: [{
+          message: {
+            content: 'Generated the image through the relay.',
+          },
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'relay-image-model',
+        input: 'Generate an image.',
+        tools: [{
+          type: 'image_generation',
+        }],
+        tool_choice: 'image_generation',
+        include: ['image_generation_call.results'],
+      }),
+    });
+    const body = await response.json() as any;
+    assert.equal(response.status, 200);
+    assert.equal(upstreamRequests.length, 2);
+    assert.equal(executedRequests.length, 1);
+    assert.equal(executedRequests[0].toolName, 'image_generation');
+    assert.equal(executedRequests[0].arguments.prompt, 'a relay bridge');
+    assert.equal(body.output[0].content[0].text, 'Generated the image through the relay.');
+    assert.equal(body.output[1].type, 'image_generation_call');
+    assert.equal(body.output[1].result[0].b64_json, 'aW1hZ2U=');
+    assert.equal(body.output[1].result[0].mime_type, 'image/png');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('adapter server executes relay-emulated code_interpreter inside the Chat Completions loop', async () => {
+  const upstreamRequests: any[] = [];
+  const executedRequests: any[] = [];
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'code_interpreter',
+      mode: 'relay-emulated',
+      relayToolName: 'relay_code_interpreter',
+    }],
+    hostedToolExecutors: {
+      code_interpreter: createCodexProviderRelayCodeInterpreterExecutor({
+        async execute(request) {
+          executedRequests.push(JSON.parse(JSON.stringify({
+            code: request.code,
+            language: request.language,
+            container: request.container,
+            files: request.files,
+          })));
+          return {
+            stdout: 'total=3\n',
+            result: {
+              total: 3,
+            },
+          };
+        },
+      }),
+    },
+    fetchImpl: (async (_url, init) => {
+      const requestBody = JSON.parse(String(init?.body ?? '{}'));
+      upstreamRequests.push(requestBody);
+      if (upstreamRequests.length === 1) {
+        assert.equal(requestBody.tools[0].function.name, 'relay_code_interpreter');
+        assert.deepEqual(requestBody.tool_choice, {
+          type: 'function',
+          function: {
+            name: 'relay_code_interpreter',
+          },
+        });
+        return new Response(JSON.stringify({
+          id: 'chatcmpl_code_1',
+          created: 1_700_000_511,
+          model: 'relay-code-model',
+          choices: [{
+            message: {
+              tool_calls: [{
+                id: 'call_code_1',
+                type: 'function',
+                function: {
+                  name: 'relay_code_interpreter',
+                  arguments: '{"code":"print(1 + 2)","language":"python","container":{"type":"auto"},"files":[{"filename":"input.txt","content":"1,2"}]}',
+                },
+              }],
+            },
+            finish_reason: 'tool_calls',
+          }],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      assert.equal(requestBody.messages.at(-2).tool_calls[0].function.name, 'relay_code_interpreter');
+      assert.equal(requestBody.messages.at(-1).role, 'tool');
+      assert.equal(requestBody.messages.at(-1).tool_call_id, 'call_code_1');
+      assert.match(requestBody.messages.at(-1).content, /total=3/u);
+      assert.match(requestBody.messages.at(-1).content, /"total":3/u);
+      return new Response(JSON.stringify({
+        id: 'chatcmpl_code_2',
+        created: 1_700_000_512,
+        model: 'relay-code-model',
+        choices: [{
+          message: {
+            content: 'Executed code through the relay.',
+          },
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'relay-code-model',
+        input: 'Run this code.',
+        tools: [{
+          type: 'code_interpreter',
+        }],
+        tool_choice: 'code_interpreter',
+      }),
+    });
+    const body = await response.json() as any;
+    assert.equal(response.status, 200);
+    assert.equal(upstreamRequests.length, 2);
+    assert.equal(executedRequests.length, 1);
+    assert.deepEqual(executedRequests[0], {
+      code: 'print(1 + 2)',
+      language: 'python',
+      container: {
+        type: 'auto',
+      },
+      files: [{
+        filename: 'input.txt',
+        content: '1,2',
+      }],
+    });
+    assert.equal(body.output[0].content[0].text, 'Executed code through the relay.');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('adapter server does not expose relay-emulated code_interpreter without an executor', async () => {
+  const upstreamRequests: any[] = [];
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'code_interpreter',
+      mode: 'relay-emulated',
+      relayToolName: 'relay_code_interpreter',
+    }],
+    hostedToolExecutors: {},
+    fetchImpl: (async (_url, init) => {
+      const requestBody = JSON.parse(String(init?.body ?? '{}'));
+      upstreamRequests.push(requestBody);
+      assert.equal(requestBody.tools, undefined);
+      assert.equal(requestBody.tool_choice, undefined);
+      return new Response(JSON.stringify({
+        id: 'chatcmpl_code_no_executor',
+        created: 1_700_000_513,
+        model: 'relay-code-model',
+        choices: [{
+          message: {
+            content: 'No code tool was exposed.',
+          },
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'relay-code-model',
+        input: 'Run this code.',
+        tools: [{
+          type: 'code_interpreter',
+        }],
+        tool_choice: 'code_interpreter',
+      }),
+    });
+    const body = await response.json() as any;
+    assert.equal(response.status, 200);
+    assert.equal(upstreamRequests.length, 1);
+    assert.equal(body.output[0].content[0].text, 'No code tool was exposed.');
+  } finally {
+    await server.stop();
+  }
+});
+
 test('adapter server streams final answer after relay-emulated web_search execution', async () => {
   const upstreamRequests: any[] = [];
   const server = new OpenAICompatibleResponsesAdapterServer({
@@ -1322,6 +1741,214 @@ test('adapter server streams final answer after relay-emulated file_search execu
   }
 });
 
+test('adapter server exposes relay-emulated file_search results when include requests them', async () => {
+  const upstreamRequests: any[] = [];
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'file_search',
+      mode: 'relay-emulated',
+      relayToolName: 'relay_file_search',
+    }],
+    hostedToolExecutors: {
+      file_search: async (request) => ({
+        content: {
+          object: 'vector_store.search_results.page',
+          query: request.arguments.query,
+          search_query: request.arguments.query,
+          provider: 'local-fs',
+          data: [{
+            file_id: 'file_include_agent',
+            filename: 'agent.ts',
+            score: 0.98,
+            attributes: {
+              path: 'src/agent.ts',
+              source: 'local-fs',
+            },
+            content: [{
+              type: 'text',
+              text: 'included file search result',
+              start_line: 7,
+              end_line: 7,
+            }],
+          }],
+          search_results: [],
+          has_more: false,
+          next_page: null,
+        },
+      }),
+    },
+    fetchImpl: (async (_url, init) => {
+      const requestBody = JSON.parse(String(init?.body ?? '{}'));
+      upstreamRequests.push(requestBody);
+      if (upstreamRequests.length === 1) {
+        return new Response(JSON.stringify({
+          id: 'chatcmpl_file_search_include_1',
+          created: 1_700_000_469,
+          model: 'relay-search-model',
+          choices: [{
+            message: {
+              tool_calls: [{
+                id: 'call_file_search_include_1',
+                type: 'function',
+                function: {
+                  name: 'relay_file_search',
+                  arguments: '{"query":"file search include target"}',
+                },
+              }],
+            },
+            finish_reason: 'tool_calls',
+          }],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({
+        id: 'chatcmpl_file_search_include_2',
+        created: 1_700_000_470,
+        model: 'relay-search-model',
+        choices: [{
+          message: {
+            content: 'file search answer with exposed results',
+          },
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'relay-search-model',
+        input: 'Search configured files.',
+        include: ['file_search_call.results'],
+        tools: [{
+          type: 'file_search',
+        }],
+      }),
+    });
+    const body = await response.json() as any;
+    const fileSearchCall = body.output.find((item: any) => item.type === 'file_search_call');
+
+    assert.equal(response.status, 200);
+    assert.equal(upstreamRequests.length, 2);
+    assert.equal(body.output[0].content[0].text, 'file search answer with exposed results');
+    assert.equal(fileSearchCall.status, 'completed');
+    assert.equal(fileSearchCall.call_id, 'call_file_search_include_1');
+    assert.deepEqual(fileSearchCall.queries, ['file search include target']);
+    assert.equal(fileSearchCall.results[0].file_id, 'file_include_agent');
+    assert.equal(fileSearchCall.results[0].filename, 'agent.ts');
+    assert.equal(fileSearchCall.results[0].content[0].text, 'included file search result');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('adapter server can expose hosted file_search results through server option', async () => {
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    exposeHostedToolResultsInResponsesOutput: true,
+    hostedTools: [{
+      name: 'file_search',
+      mode: 'relay-emulated',
+      relayToolName: 'relay_file_search',
+    }],
+    hostedToolExecutors: {
+      file_search: async () => ({
+        content: {
+          object: 'vector_store.search_results.page',
+          data: [{
+            file_id: 'file_option_agent',
+            filename: 'option.md',
+            score: 1,
+            attributes: {},
+            content: [{
+              type: 'text',
+              text: 'option exposed file result',
+            }],
+          }],
+          search_results: [],
+        },
+      }),
+    },
+    fetchImpl: (async (_url, init) => {
+      const requestBody = JSON.parse(String(init?.body ?? '{}'));
+      if (requestBody.messages?.some((message: any) => message.role === 'tool')) {
+        return new Response(JSON.stringify({
+          id: 'chatcmpl_file_search_option_2',
+          created: 1_700_000_472,
+          model: 'relay-search-model',
+          choices: [{
+            message: {
+              content: 'option final answer',
+            },
+          }],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({
+        id: 'chatcmpl_file_search_option_1',
+        created: 1_700_000_471,
+        model: 'relay-search-model',
+        choices: [{
+          message: {
+            tool_calls: [{
+              id: 'call_file_search_option_1',
+              type: 'function',
+              function: {
+                name: 'relay_file_search',
+                arguments: '{"query":"option file search"}',
+              },
+            }],
+          },
+          finish_reason: 'tool_calls',
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'relay-search-model',
+        input: 'Search configured files.',
+        tools: [{
+          type: 'file_search',
+        }],
+      }),
+    });
+    const body = await response.json() as any;
+    const fileSearchCall = body.output.find((item: any) => item.type === 'file_search_call');
+
+    assert.equal(response.status, 200);
+    assert.equal(body.output[0].content[0].text, 'option final answer');
+    assert.equal(fileSearchCall.results[0].file_id, 'file_option_agent');
+  } finally {
+    await server.stop();
+  }
+});
+
 test('adapter server emits opt-in hosted tool SSE lifecycle events', async () => {
   const server = new OpenAICompatibleResponsesAdapterServer({
     apiKey: 'test-key',
@@ -1436,6 +2063,125 @@ test('adapter server emits opt-in hosted tool SSE lifecycle events', async () =>
     assert.equal(events[1].data.hosted_tool.metadata.phase, 'query');
     assert.equal(events[2].data.hosted_tool.metadata.provider, 'test-search');
     assert.match(events[2].data.hosted_tool.output_preview, /Observable Relay Result/u);
+    assert.equal(events.some((event) => event.event === 'response.output_text.delta'), true);
+    assert.equal(events.at(-1)?.event, 'response.completed');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('adapter server emits code_interpreter stdout and stderr hosted tool deltas', async () => {
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'code_interpreter',
+      mode: 'relay-emulated',
+      relayToolName: 'relay_code_interpreter',
+    }],
+    hostedToolExecutors: {
+      code_interpreter: createCodexProviderRelayCodeInterpreterExecutor({
+        async execute(request) {
+          await request.emitStdout('stdout line\n', { phase: 'run' });
+          await request.emitStderr('stderr line\n', { phase: 'warn' });
+          return {
+            stdout: 'stdout line\n',
+            stderr: 'stderr line\n',
+          };
+        },
+      }),
+    },
+    emitHostedToolSseEvents: true,
+    fetchImpl: (async (_url, init) => {
+      const requestBody = JSON.parse(String(init?.body ?? '{}'));
+      if (requestBody.messages.some((message: any) => message.role === 'tool')) {
+        return createEventStreamResponse([
+          {
+            id: 'chatcmpl_observable_code_2',
+            created: 1_700_000_514,
+            model: 'relay-code-model',
+            choices: [{
+              index: 0,
+              delta: {
+                content: 'code final answer',
+              },
+            }],
+          },
+          {
+            id: 'chatcmpl_observable_code_2',
+            created: 1_700_000_514,
+            model: 'relay-code-model',
+            choices: [{
+              index: 0,
+              finish_reason: 'stop',
+            }],
+          },
+        ]);
+      }
+      return createEventStreamResponse([
+        {
+          id: 'chatcmpl_observable_code_1',
+          created: 1_700_000_514,
+          model: 'relay-code-model',
+          choices: [{
+            index: 0,
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: 'call_observable_code_1',
+                type: 'function',
+                function: {
+                  name: 'relay_code_interpreter',
+                  arguments: '{"code":"print(1)","language":"python"}',
+                },
+              }],
+            },
+          }],
+        },
+        {
+          id: 'chatcmpl_observable_code_1',
+          created: 1_700_000_514,
+          model: 'relay-code-model',
+          choices: [{
+            index: 0,
+            finish_reason: 'tool_calls',
+          }],
+        },
+      ]);
+    }) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'relay-code-model',
+        input: 'Run observable code.',
+        stream: true,
+        tools: [{
+          type: 'code_interpreter',
+        }],
+      }),
+    });
+    const events = parseSseText(await response.text());
+    assert.equal(response.status, 200);
+    assert.deepEqual(events.slice(0, 4).map((event) => event.event), [
+      'hosted_tool.started',
+      'hosted_tool.delta',
+      'hosted_tool.delta',
+      'hosted_tool.completed',
+    ]);
+    assert.equal(events[0].data.hosted_tool.name, 'code_interpreter');
+    assert.equal(events[1].data.hosted_tool.delta.stream, 'stdout');
+    assert.equal(events[1].data.hosted_tool.delta.text, 'stdout line');
+    assert.equal(events[1].data.hosted_tool.metadata.phase, 'run');
+    assert.equal(events[2].data.hosted_tool.delta.stream, 'stderr');
+    assert.equal(events[2].data.hosted_tool.delta.text, 'stderr line');
+    assert.equal(events[2].data.hosted_tool.metadata.phase, 'warn');
     assert.equal(events.some((event) => event.event === 'response.output_text.delta'), true);
     assert.equal(events.at(-1)?.event, 'response.completed');
   } finally {

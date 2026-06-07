@@ -78,6 +78,9 @@ export function buildCodexToolContext(tools: unknown): CodexToolContext {
       case 'web_search_preview':
       case 'web_search_preview_2025_03_11':
       case 'file_search':
+      case 'tool_search':
+      case 'image_generation':
+      case 'code_interpreter':
       case 'local_shell':
       case 'computer_use':
         addBuiltInToolToContext(context, record, type);
@@ -151,6 +154,9 @@ export function responsesToolsToChatTools(
       case 'web_search_preview':
       case 'web_search_preview_2025_03_11':
       case 'file_search':
+      case 'tool_search':
+      case 'image_generation':
+      case 'code_interpreter':
       case 'local_shell':
       case 'computer_use': {
         if (isHostedWebSearchToolType(type) && options.builtinToolConverter) {
@@ -261,7 +267,7 @@ function detectCodexCustomToolKind(tool: JsonRecord, name: string): CodexCustomT
     return 'apply_patch';
   }
   const type = stringValue(tool.type);
-  if (isHostedWebSearchToolType(type) || type === 'file_search' || ['local_shell', 'computer_use'].includes(type)) {
+  if (isHostedWebSearchToolType(type) || ['local_shell', 'computer_use'].includes(type)) {
     return 'built_in';
   }
   return 'raw';
@@ -271,7 +277,10 @@ function isHostedWebSearchToolType(type: string): boolean {
   return type === 'web_search'
     || type === 'web_search_preview'
     || type === 'web_search_preview_2025_03_11'
-    || type === 'file_search';
+    || type === 'file_search'
+    || type === 'tool_search'
+    || type === 'image_generation'
+    || type === 'code_interpreter';
 }
 
 function responsesFunctionToolToChatTool(

@@ -16,7 +16,9 @@ import type {
   CodexProviderRelayLocalFileSearchSourceOptions,
   CodexProviderRelayLocalVectorFileSearchSourceOptions,
   CodexProviderRelayMemoryFileSearchSourceOptions,
+  CodexProviderRelayRemoteDocumentsFileSearchSourceOptions,
   CodexProviderRelaySqliteFtsFileSearchSourceOptions,
+  CodexProviderRelayVectorStoreFileSearchSourceOptions,
   JsonRecord,
   NormalizedFileSearchOptions,
 } from './types.js';
@@ -25,7 +27,9 @@ import {
   createCodexProviderRelayLocalFileSearchSource,
   createCodexProviderRelayLocalVectorFileSearchSource,
   createCodexProviderRelayMemoryFileSearchSource,
+  createCodexProviderRelayRemoteDocumentsFileSearchSource,
   createCodexProviderRelaySqliteFtsFileSearchSource,
+  createCodexProviderRelayVectorStoreFileSearchSource,
 } from './sources.js';
 import {
   clampInteger,
@@ -220,13 +224,25 @@ function normalizeFileSearchSource(
   ) {
     return createCodexProviderRelayInMemoryVectorFileSearchSource(source as CodexProviderRelayInMemoryVectorFileSearchSourceOptions);
   }
+  if (
+    source
+    && normalizeString((source as CodexProviderRelayVectorStoreFileSearchSourceOptions).type) === 'vector-store'
+  ) {
+    return createCodexProviderRelayVectorStoreFileSearchSource(source as CodexProviderRelayVectorStoreFileSearchSourceOptions);
+  }
+  if (
+    source
+    && normalizeString((source as CodexProviderRelayRemoteDocumentsFileSearchSourceOptions).type) === 'remote-documents'
+  ) {
+    return createCodexProviderRelayRemoteDocumentsFileSearchSource(source as CodexProviderRelayRemoteDocumentsFileSearchSourceOptions);
+  }
   if (source && Array.isArray((source as CodexProviderRelayMemoryFileSearchSourceOptions).documents)) {
     return createCodexProviderRelayMemoryFileSearchSource(source as CodexProviderRelayMemoryFileSearchSourceOptions);
   }
   if (source && normalizeString((source as CodexProviderRelaySqliteFtsFileSearchSourceOptions).table)) {
     return createCodexProviderRelaySqliteFtsFileSearchSource(source as CodexProviderRelaySqliteFtsFileSearchSourceOptions);
   }
-  throw new Error('file_search sources must be source adapters, local-fs source options, local-vector source options, memory-documents source options, sqlite-fts source options, or in-memory-vector source options.');
+  throw new Error('file_search sources must be source adapters, local-fs source options, local-vector source options, memory-documents source options, sqlite-fts source options, in-memory-vector source options, vector-store source options, or remote-documents source options.');
 }
 
 
@@ -333,9 +349,9 @@ function fileSearchResultMatchesFilter(
   const actual = fileSearchResultAttributeValue(result, key);
   switch (comparisonFilter.type) {
     case 'eq':
-      return compareFilterValues(actual, comparisonFilter.value) === 0;
+      return filterValueMatches(actual, comparisonFilter.value);
     case 'ne':
-      return compareFilterValues(actual, comparisonFilter.value) !== 0;
+      return !filterValueMatches(actual, comparisonFilter.value);
     case 'gt':
       return compareFilterValues(actual, comparisonFilter.value) > 0;
     case 'gte':
@@ -346,15 +362,25 @@ function fileSearchResultMatchesFilter(
       return compareFilterValues(actual, comparisonFilter.value) <= 0;
     case 'in':
       return Array.isArray(comparisonFilter.value)
-        ? comparisonFilter.value.some((value) => compareFilterValues(actual, value) === 0)
+        ? comparisonFilter.value.some((value) => filterValueMatches(actual, value))
         : false;
     case 'nin':
       return Array.isArray(comparisonFilter.value)
-        ? !comparisonFilter.value.some((value) => compareFilterValues(actual, value) === 0)
+        ? !comparisonFilter.value.some((value) => filterValueMatches(actual, value))
         : true;
     default:
       return true;
   }
+}
+
+function filterValueMatches(actual: unknown, expected: unknown): boolean {
+  if (Array.isArray(actual)) {
+    return actual.some((entry) => filterValueMatches(entry, expected));
+  }
+  if (Array.isArray(expected)) {
+    return expected.some((entry) => filterValueMatches(actual, entry));
+  }
+  return compareFilterValues(actual, expected) === 0;
 }
 
 function fileSearchResultAttributeValue(result: CodexProviderRelayFileSearchSourceMatch, key: string): unknown {
@@ -510,4 +536,3 @@ function limitResultsByPayload(
   }
   return limited;
 }
-

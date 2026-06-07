@@ -30,9 +30,23 @@ import {
   type CodexProviderRelayHostedToolExecutorRegistry,
   type CodexProviderRelayHostedToolExecutorRegistryInput,
 } from '../hosted_tool_executors.js';
+import {
+  isCodexProviderRelayRelayEmulatedBuiltinToolType,
+  normalizeCodexProviderRelayBuiltinToolName,
+} from '../builtin-tools/index.js';
 
 type JsonRecord = Record<string, any>;
 type AdapterRoute = 'responses' | 'responses.compact';
+type RelayHostedToolExecutionRecord = {
+  toolName: string;
+  relayToolName: string;
+  callId: string;
+  iteration: number;
+  arguments: JsonRecord;
+  content: string;
+  resultContent: unknown;
+  resultMetadata: JsonRecord | null;
+};
 type GatewayErrorCategory =
   | 'authentication'
   | 'rate_limit'
@@ -167,6 +181,7 @@ export interface OpenAICompatibleResponsesAdapterServerOptions {
   hostedToolExecutors?: CodexProviderRelayHostedToolExecutorRegistryInput;
   maxHostedToolIterations?: number | null;
   emitHostedToolSseEvents?: boolean | null;
+  exposeHostedToolResultsInResponsesOutput?: boolean | null;
 }
 
 const DEFAULT_UPSTREAM_BASE_URL = 'https://api.openai.com/v1';
@@ -213,6 +228,8 @@ export class OpenAICompatibleResponsesAdapterServer {
 
   private readonly emitHostedToolSseEvents: boolean;
 
+  private readonly exposeHostedToolResultsInResponsesOutput: boolean;
+
   private server: http.Server | null;
 
   private startedUrl: string | null;
@@ -236,6 +253,7 @@ export class OpenAICompatibleResponsesAdapterServer {
     hostedToolExecutors = null,
     maxHostedToolIterations = null,
     emitHostedToolSseEvents = false,
+    exposeHostedToolResultsInResponsesOutput = false,
   }: OpenAICompatibleResponsesAdapterServerOptions) {
     const normalizedKey = normalizeString(apiKey);
     if (!normalizedKey) {
@@ -263,6 +281,7 @@ export class OpenAICompatibleResponsesAdapterServer {
     ));
     this.maxHostedToolIterations = normalizePositiveInteger(maxHostedToolIterations) ?? 4;
     this.emitHostedToolSseEvents = Boolean(emitHostedToolSseEvents);
+    this.exposeHostedToolResultsInResponsesOutput = Boolean(exposeHostedToolResultsInResponsesOutput);
     this.models = normalizeModels(
       models,
       this.defaultModel,
@@ -563,6 +582,12 @@ export class OpenAICompatibleResponsesAdapterServer {
         providerCapabilities: effectiveCapabilities,
         modelMetadata,
       });
+      appendHostedToolResultsToResponsesOutput({
+        response: adaptedResponse,
+        request: requestBody,
+        executions: hostedToolLoop.executions,
+        exposeByDefault: this.exposeHostedToolResultsInResponsesOutput,
+      });
       this.emitTrace({
         type: 'response.translated',
         route: 'responses',
@@ -681,16 +706,19 @@ export class OpenAICompatibleResponsesAdapterServer {
     json: JsonRecord;
     status: number;
     error: JsonRecord | null;
+    executions: RelayHostedToolExecutionRecord[];
   }> {
     if (this.executableHostedTools.length === 0) {
       return {
         json: initialJson,
         status: 200,
         error: null,
+        executions: [],
       };
     }
 
     let currentJson = initialJson;
+    const executions: RelayHostedToolExecutionRecord[] = [];
     const loopChatBody = cloneJson(chatBody);
     for (let iteration = 1; iteration <= this.maxHostedToolIterations; iteration += 1) {
       const executableCalls = collectRelayHostedToolCalls(
@@ -703,6 +731,7 @@ export class OpenAICompatibleResponsesAdapterServer {
           json: currentJson,
           status: 200,
           error: null,
+          executions,
         };
       }
 
@@ -714,11 +743,13 @@ export class OpenAICompatibleResponsesAdapterServer {
             iteration,
             requestedModel,
           );
+          executions.push(executionResult);
           loopChatBody.messages.push({
             role: 'tool',
             tool_call_id: executionResult.callId,
             content: executionResult.content,
           });
+          appendDeferredToolsFromToolSearch(loopChatBody, executionResult);
         }
       }
 
@@ -738,6 +769,7 @@ export class OpenAICompatibleResponsesAdapterServer {
             upstream.response.status,
             upstream.response.headers,
           ),
+          executions,
         };
       }
       currentJson = await upstream.response.json() as JsonRecord;
@@ -749,6 +781,7 @@ export class OpenAICompatibleResponsesAdapterServer {
             this.providerName,
             'non_object_json_response_after_hosted_tool_execution',
           ),
+          executions,
         };
       }
     }
@@ -761,6 +794,7 @@ export class OpenAICompatibleResponsesAdapterServer {
         type: 'unsupported_feature',
         code: 'hosted_tool_loop_exceeded',
       },
+      executions,
     };
   }
 
@@ -904,6 +938,7 @@ export class OpenAICompatibleResponsesAdapterServer {
           tool_call_id: executionResult.callId,
           content: executionResult.content,
         });
+        appendDeferredToolsFromToolSearch(loopChatBody, executionResult);
       }
     }
 
@@ -926,6 +961,12 @@ export class OpenAICompatibleResponsesAdapterServer {
   ): Promise<{
     callId: string;
     content: string;
+    toolName: string;
+    relayToolName: string;
+    iteration: number;
+    arguments: JsonRecord;
+    resultContent: unknown;
+    resultMetadata: JsonRecord | null;
   }> {
     const callId = normalizeString(entry.toolCall?.id) || `call_${iteration}`;
     const relayToolName = normalizeString(entry.toolCall?.function?.name)
@@ -933,6 +974,8 @@ export class OpenAICompatibleResponsesAdapterServer {
       || entry.declaration.name;
     const rawArguments = normalizeString(entry.toolCall?.function?.arguments) || '{}';
     let content: string;
+    let resultContent: unknown = null;
+    let resultMetadata: JsonRecord | null = null;
     const startedAt = Date.now();
     const emitSseEvent = typeof observation.emitSseEvent === 'function'
       ? observation.emitSseEvent
@@ -946,8 +989,8 @@ export class OpenAICompatibleResponsesAdapterServer {
       startedAt,
       argumentsObject: parseToolCallArguments(rawArguments),
     }));
+    const argumentsObject = parseToolCallArguments(rawArguments);
     try {
-      const argumentsObject = parseToolCallArguments(rawArguments);
       const result = await this.hostedToolExecutorRegistry.execute({
         toolName: entry.declaration.name,
         relayToolName,
@@ -972,6 +1015,8 @@ export class OpenAICompatibleResponsesAdapterServer {
           }
           : null,
       });
+      resultContent = result.content ?? null;
+      resultMetadata = result.metadata ?? null;
       content = formatCodexProviderRelayHostedToolExecutionResult(result);
       emitSseEvent?.(buildHostedToolSseEvent({
         type: 'hosted_tool.completed',
@@ -985,12 +1030,13 @@ export class OpenAICompatibleResponsesAdapterServer {
         outputPreview: hostedToolOutputPreview(content),
       }));
     } catch (error) {
-      content = JSON.stringify({
+      resultContent = {
         error: {
           message: error instanceof Error ? error.message : String(error),
           type: 'hosted_tool_execution_error',
         },
-      });
+      };
+      content = JSON.stringify(resultContent);
       emitSseEvent?.(buildHostedToolSseEvent({
         type: 'hosted_tool.failed',
         entry,
@@ -1017,6 +1063,12 @@ export class OpenAICompatibleResponsesAdapterServer {
     return {
       callId,
       content,
+      toolName: entry.declaration.name,
+      relayToolName,
+      iteration,
+      arguments: argumentsObject,
+      resultContent,
+      resultMetadata,
     };
   }
 
@@ -1448,6 +1500,134 @@ function buildAssistantToolCallMessage(
   });
 }
 
+function appendDeferredToolsFromToolSearch(
+  chatBody: JsonRecord,
+  execution: RelayHostedToolExecutionRecord,
+): void {
+  if (normalizeCodexProviderRelayBuiltinToolName(execution.toolName) !== 'tool_search') {
+    return;
+  }
+  const deferredTools = normalizeDeferredToolSearchChatTools(execution.resultContent);
+  if (deferredTools.length === 0) {
+    return;
+  }
+  const existingTools = Array.isArray(chatBody.tools) ? chatBody.tools : [];
+  const existingNames = new Set(
+    existingTools
+      .map((tool) => normalizeString((tool as JsonRecord | null | undefined)?.function?.name))
+      .filter(Boolean),
+  );
+  const nextTools = [...existingTools];
+  for (const tool of deferredTools) {
+    const name = normalizeString(tool.function?.name);
+    if (!name || existingNames.has(name)) {
+      continue;
+    }
+    existingNames.add(name);
+    nextTools.push(tool);
+  }
+  chatBody.tools = nextTools;
+  delete chatBody.tool_choice;
+}
+
+function normalizeDeferredToolSearchChatTools(value: unknown): JsonRecord[] {
+  const payload = unwrapDeferredToolSearchPayload(value);
+  if (!payload) {
+    return [];
+  }
+  const tools = normalizeArray(payload.tools)
+    .map((tool) => normalizeDeferredChatFunctionTool(tool))
+    .filter(Boolean) as JsonRecord[];
+  const namespaceTools = normalizeArray(payload.namespaces)
+    .flatMap((namespace) => normalizeDeferredNamespaceChatFunctionTools(namespace));
+  return dedupeDeferredChatFunctionTools([...tools, ...namespaceTools]);
+}
+
+function unwrapDeferredToolSearchPayload(value: unknown): JsonRecord | null {
+  if (typeof value === 'string') {
+    try {
+      return unwrapDeferredToolSearchPayload(JSON.parse(value));
+    } catch {
+      return null;
+    }
+  }
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const record = value as JsonRecord;
+  if (Array.isArray(record.tools) || Array.isArray(record.namespaces)) {
+    return record;
+  }
+  if (record.content && typeof record.content === 'object') {
+    return unwrapDeferredToolSearchPayload(record.content);
+  }
+  return null;
+}
+
+function normalizeDeferredNamespaceChatFunctionTools(value: unknown): JsonRecord[] {
+  if (!value || typeof value !== 'object') {
+    return [];
+  }
+  const namespace = value as JsonRecord;
+  const namespaceName = normalizeString(namespace.name);
+  return normalizeArray(namespace.tools)
+    .map((tool) => normalizeDeferredChatFunctionTool(tool, namespaceName))
+    .filter(Boolean) as JsonRecord[];
+}
+
+function normalizeDeferredChatFunctionTool(value: unknown, namespace = ''): JsonRecord | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const record = value as JsonRecord;
+  const functionRecord = record.function && typeof record.function === 'object'
+    ? record.function as JsonRecord
+    : record;
+  const rawName = normalizeString(functionRecord.name ?? record.name);
+  const name = namespace ? `${namespace}${rawName}` : rawName;
+  if (!isValidDeferredChatFunctionName(name)) {
+    return null;
+  }
+  return {
+    type: 'function',
+    function: omitUndefined({
+      name,
+      description: normalizeString(functionRecord.description ?? record.description) || undefined,
+      parameters: normalizeDeferredToolParameters(functionRecord.parameters ?? record.parameters),
+      strict: functionRecord.strict ?? record.strict,
+    }),
+  };
+}
+
+function normalizeDeferredToolParameters(value: unknown): JsonRecord {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as JsonRecord;
+  }
+  return {
+    type: 'object',
+    properties: {},
+    additionalProperties: true,
+  };
+}
+
+function dedupeDeferredChatFunctionTools(tools: JsonRecord[]): JsonRecord[] {
+  const seen = new Set<string>();
+  const deduped: JsonRecord[] = [];
+  for (const tool of tools) {
+    const name = normalizeString(tool.function?.name);
+    if (!name || seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    deduped.push(tool);
+  }
+  return deduped;
+}
+
+function isValidDeferredChatFunctionName(value: string): boolean {
+  return /^[A-Za-z0-9_-]{1,64}$/u.test(value);
+}
+
 function parseChatStreamData(data: string): JsonRecord | null {
   const trimmed = normalizeString(data);
   if (!trimmed || trimmed === '[DONE]') {
@@ -1793,6 +1973,145 @@ function hostedToolOutputPreview(content: string): string {
     return normalized;
   }
   return `${normalized.slice(0, 500)}...`;
+}
+
+function appendHostedToolResultsToResponsesOutput({
+  response,
+  request,
+  executions,
+  exposeByDefault,
+}: {
+  response: JsonRecord;
+  request: JsonRecord;
+  executions: RelayHostedToolExecutionRecord[];
+  exposeByDefault: boolean;
+}): void {
+  if (executions.length === 0) {
+    return;
+  }
+  const output = Array.isArray(response.output) ? response.output : [];
+  for (const execution of executions) {
+    if (
+      execution.toolName === 'file_search'
+      && shouldExposeFileSearchResults(request, exposeByDefault)
+    ) {
+      const results = extractFileSearchResultsFromHostedToolOutput(execution.content);
+      if (results.length === 0) {
+        continue;
+      }
+      output.push({
+        id: `fs_${execution.callId}`,
+        type: 'file_search_call',
+        status: 'completed',
+        call_id: execution.callId,
+        queries: normalizeString(execution.arguments.query)
+          ? [normalizeString(execution.arguments.query)]
+          : [],
+        results,
+      });
+    } else if (
+      execution.toolName === 'image_generation'
+      && shouldExposeImageGenerationResults(request, exposeByDefault)
+    ) {
+      const images = extractImageGenerationResultsFromHostedToolOutput(execution.content);
+      if (images.length === 0) {
+        continue;
+      }
+      output.push({
+        id: `ig_${execution.callId}`,
+        type: 'image_generation_call',
+        status: 'completed',
+        call_id: execution.callId,
+        prompt: normalizeString(execution.arguments.prompt)
+          || normalizeString(execution.arguments.input)
+          || null,
+        result: images,
+      });
+    }
+  }
+  response.output = output;
+}
+
+function shouldExposeFileSearchResults(request: JsonRecord, exposeByDefault: boolean): boolean {
+  if (exposeByDefault) {
+    return true;
+  }
+  return normalizeArray(request?.include).some((entry) => normalizeString(entry) === 'file_search_call.results');
+}
+
+function shouldExposeImageGenerationResults(request: JsonRecord, exposeByDefault: boolean): boolean {
+  if (exposeByDefault) {
+    return true;
+  }
+  return normalizeArray(request?.include).some((entry) => {
+    const normalized = normalizeString(entry);
+    return normalized === 'image_generation_call.results'
+      || normalized === 'image_generation_call.result';
+  });
+}
+
+function extractFileSearchResultsFromHostedToolOutput(content: string): JsonRecord[] {
+  const parsed = parseJsonObject(content);
+  const payload = parsed?.content && typeof parsed.content === 'object'
+    ? parsed.content as JsonRecord
+    : parsed;
+  if (!payload) {
+    return [];
+  }
+  const results = Array.isArray(payload.data)
+    ? payload.data
+    : Array.isArray(payload.search_results)
+      ? payload.search_results
+      : [];
+  return results
+    .filter((entry) => entry && typeof entry === 'object')
+    .map((entry) => normalizeFileSearchCallResult(entry as JsonRecord));
+}
+
+function normalizeFileSearchCallResult(result: JsonRecord): JsonRecord {
+  return omitUndefined({
+    file_id: normalizeString(result.file_id) || null,
+    filename: normalizeString(result.filename) || null,
+    score: Number.isFinite(Number(result.score)) ? Number(result.score) : null,
+    attributes: result.attributes && typeof result.attributes === 'object'
+      ? result.attributes
+      : {},
+    content: Array.isArray(result.content)
+      ? result.content.filter((entry) => entry && typeof entry === 'object')
+      : [],
+  });
+}
+
+function extractImageGenerationResultsFromHostedToolOutput(content: string): JsonRecord[] {
+  const parsed = parseJsonObject(content);
+  const payload = parsed?.content && typeof parsed.content === 'object'
+    ? parsed.content as JsonRecord
+    : parsed;
+  if (!payload) {
+    return [];
+  }
+  return normalizeArray(payload.images)
+    .filter((entry) => entry && typeof entry === 'object')
+    .map((entry) => normalizeImageGenerationCallResult(entry as JsonRecord))
+    .filter((entry) => entry.b64_json || entry.url);
+}
+
+function normalizeImageGenerationCallResult(result: JsonRecord): JsonRecord {
+  return omitUndefined({
+    b64_json: normalizeString(result.b64_json) || null,
+    url: normalizeString(result.url) || null,
+    mime_type: normalizeString(result.mime_type) || null,
+    revised_prompt: normalizeString(result.revised_prompt) || null,
+  });
+}
+
+function parseJsonObject(value: string): JsonRecord | null {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed as JsonRecord : null;
+  } catch {
+    return null;
+  }
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<JsonRecord> {
@@ -2845,29 +3164,15 @@ function normalizeArray(value: unknown): any[] {
 }
 
 function isBuiltinWebSearchToolType(type: unknown): boolean {
-  const normalized = normalizeString(type);
-  return normalized === 'web_search'
-    || normalized === 'web_search_preview'
-    || normalized === 'web_search_preview_2025_03_11';
+  return normalizeCodexProviderRelayBuiltinToolName(type) === 'web_search';
 }
 
 function isRelayHostedToolType(type: unknown): boolean {
-  const normalized = normalizeRelayHostedToolType(type);
-  return normalized === 'web_search' || normalized === 'file_search';
+  return isCodexProviderRelayRelayEmulatedBuiltinToolType(type);
 }
 
 function normalizeRelayHostedToolType(type: unknown): string {
-  const normalized = normalizeString(type);
-  switch (normalized) {
-    case 'web_search':
-    case 'web_search_preview':
-    case 'web_search_preview_2025_03_11':
-      return 'web_search';
-    case 'file_search':
-      return 'file_search';
-    default:
-      return normalized;
-  }
+  return normalizeCodexProviderRelayBuiltinToolName(type) ?? normalizeString(type);
 }
 
 function isRelayHostedBuiltinChatTool(

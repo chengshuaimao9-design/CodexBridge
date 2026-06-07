@@ -34,7 +34,9 @@ export type CodexProviderRelayFileSearchSourceInput =
   | CodexProviderRelayLocalVectorFileSearchSourceOptions
   | CodexProviderRelayMemoryFileSearchSourceOptions
   | CodexProviderRelaySqliteFtsFileSearchSourceOptions
-  | CodexProviderRelayInMemoryVectorFileSearchSourceOptions;
+  | CodexProviderRelayInMemoryVectorFileSearchSourceOptions
+  | CodexProviderRelayVectorStoreFileSearchSourceOptions
+  | CodexProviderRelayRemoteDocumentsFileSearchSourceOptions;
 
 export interface CodexProviderRelayFileSearchSource {
   name: string;
@@ -64,6 +66,81 @@ export interface CodexProviderRelayFileSearchSourceResult {
   results: CodexProviderRelayFileSearchSourceMatch[];
   scannedFiles?: number | null;
   skippedFiles?: number | null;
+  metadata?: JsonRecord | null;
+}
+
+export interface CodexProviderRelayVectorStoreFileSearchSourceOptions {
+  type?: 'vector-store' | null;
+  name?: string | null;
+  store: CodexProviderRelayVectorStoreAdapter;
+}
+
+export interface CodexProviderRelayVectorStoreAdapter {
+  search(
+    request: CodexProviderRelayVectorStoreSearchRequest,
+  ): Promise<CodexProviderRelayFileSearchSourceResult> | CodexProviderRelayFileSearchSourceResult;
+}
+
+export interface CodexProviderRelayVectorStoreSearchRequest {
+  sourceName: string;
+  query: string;
+  terms: string[];
+  pathGlob: string;
+  vectorStoreIds: string[];
+  filters: CodexProviderRelayFileSearchFilter | null;
+  rankingOptions: CodexProviderRelayFileSearchRankingOptions;
+  maxResults: number;
+  maxBytesPerFile: number;
+  maxPayloadBytes: number;
+  snippetLines: number;
+  includeContent: boolean | null;
+  toolRequest: CodexProviderRelayHostedToolExecutionRequest;
+}
+
+export interface CodexProviderRelayRemoteDocumentsFileSearchSourceOptions {
+  type?: 'remote-documents' | null;
+  name?: string | null;
+  query: CodexProviderRelayRemoteDocumentsQueryFunction;
+  fetchDocument?: CodexProviderRelayRemoteDocumentsFetchFunction | null;
+  maxDocumentsScanned?: number | null;
+  maxBytesPerDocument?: number | null;
+  snippetLines?: number | null;
+  includeContent?: boolean | null;
+}
+
+export type CodexProviderRelayRemoteDocumentsQueryFunction = (
+  request: CodexProviderRelayRemoteDocumentsQueryRequest,
+) => Promise<CodexProviderRelayRemoteDocument[]> | CodexProviderRelayRemoteDocument[];
+
+export type CodexProviderRelayRemoteDocumentsFetchFunction = (
+  request: CodexProviderRelayRemoteDocumentsFetchRequest,
+) => Promise<string | CodexProviderRelayRemoteDocument | null> | string | CodexProviderRelayRemoteDocument | null;
+
+export interface CodexProviderRelayRemoteDocumentsQueryRequest {
+  sourceName: string;
+  query: string;
+  terms: string[];
+  pathGlob: string;
+  vectorStoreIds: string[];
+  filters: CodexProviderRelayFileSearchFilter | null;
+  rankingOptions: CodexProviderRelayFileSearchRankingOptions;
+  maxResults: number;
+  includeContent: boolean | null;
+  toolRequest: CodexProviderRelayHostedToolExecutionRequest;
+}
+
+export interface CodexProviderRelayRemoteDocumentsFetchRequest extends CodexProviderRelayRemoteDocumentsQueryRequest {
+  document: CodexProviderRelayRemoteDocument;
+}
+
+export interface CodexProviderRelayRemoteDocument {
+  id: string;
+  title?: string | null;
+  uri?: string | null;
+  path?: string | null;
+  content?: string | null;
+  snippet?: string | null;
+  score?: number | null;
   metadata?: JsonRecord | null;
 }
 
@@ -383,6 +460,17 @@ export interface NormalizedFileSearchOptions {
   maxPayloadBytes: number;
   snippetLines: number;
   includeContent: boolean | null;
+}
+
+export interface NormalizedRemoteDocumentsFileSearchOptions {
+  name: string;
+  type: 'remote-documents';
+  query: CodexProviderRelayRemoteDocumentsQueryFunction;
+  fetchDocument: CodexProviderRelayRemoteDocumentsFetchFunction | null;
+  maxDocumentsScanned: number;
+  maxBytesPerDocument: number;
+  snippetLines: number;
+  includeContent: boolean;
 }
 
 export interface NormalizedLocalFileSearchOptions {

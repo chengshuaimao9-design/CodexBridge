@@ -1,6 +1,9 @@
 import type {
   CodexProviderRelayHostedToolName,
 } from './hosted_tools.js';
+import {
+  normalizeCodexProviderRelayBuiltinToolName,
+} from './builtin-tools/index.js';
 
 export type JsonRecord = Record<string, any>;
 
@@ -133,5 +136,6 @@ function normalizeHostedToolExecutionResult(value: unknown): CodexProviderRelayH
 }
 
 function normalizeHostedToolExecutorName(value: unknown): CodexProviderRelayHostedToolName {
-  return String(value ?? '').trim() as CodexProviderRelayHostedToolName;
+  const raw = String(value ?? '').trim();
+  return (normalizeCodexProviderRelayBuiltinToolName(raw) ?? raw) as CodexProviderRelayHostedToolName;
 }

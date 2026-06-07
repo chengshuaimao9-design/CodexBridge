@@ -4,7 +4,10 @@ Internal package for the Codex Gateway protocol layer.
 
 ## Status
 
-Development for this package is currently paused.
+Development for this package is currently paused. New integrations should use
+`@codexbridge/codex-provider-relay`, which now owns the reusable provider
+profile surface, protocol converters, capability policy, and local Responses
+adapter server.
 
 It remains in the repository as historical/internal reference material, but it
 is not part of the active roadmap at this time.

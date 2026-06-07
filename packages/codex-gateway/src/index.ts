@@ -106,6 +106,11 @@ export type {
   ResponsesToChatOptions,
 } from './converters/responses_adapter.js';
 export {
+  buildOpenAICompatibleChatCompletionsUrl,
+  buildOpenAICompatibleModelsUrl,
+  isOpenAICompatibleChatCompletionsProxyPath,
+  isOpenAICompatibleModelsProxyPath,
+  isOpenAICompatibleResponsesProxyPath,
   OpenAICompatibleResponsesAdapterServer,
   reserveLocalPort,
 } from './server/responses_adapter_server.js';

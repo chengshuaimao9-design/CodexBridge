@@ -5,7 +5,6 @@ import { builtinModules } from 'node:module';
 const repoRoot = process.cwd();
 const packageRoot = path.join(repoRoot, 'packages', 'codex-provider-relay');
 const sourceRoot = path.join(packageRoot, 'src');
-const codexGatewayRoot = path.join(repoRoot, 'packages', 'codex-gateway');
 const nodeBuiltins = new Set([
   ...builtinModules,
   ...builtinModules.map((name) => `node:${name}`),
@@ -75,12 +74,12 @@ for (const file of listTypeScriptFiles(sourceRoot)) {
     }
     if (specifier.startsWith('.')) {
       const resolved = resolveRelativeImport(file, specifier);
-      if (!isInside(resolved, packageRoot) && !isInside(resolved, codexGatewayRoot)) {
+      if (!isInside(resolved, packageRoot)) {
         failures.push(`${path.relative(repoRoot, file)} imports outside allowed package boundary: ${specifier}`);
       }
       continue;
     }
-    if (!nodeBuiltins.has(specifier) && specifier !== '@codexbridge/codex-gateway') {
+    if (!nodeBuiltins.has(specifier)) {
       failures.push(`${path.relative(repoRoot, file)} imports external module: ${specifier}`);
     }
   }

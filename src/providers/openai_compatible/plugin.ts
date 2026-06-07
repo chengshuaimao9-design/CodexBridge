@@ -1,6 +1,5 @@
 import { CodexAppClient, createStderrLogger } from '../codex/app_client.js';
 import { CodexProviderPlugin } from '../codex/plugin.js';
-import { OpenAICompatibleResponsesAdapterServer } from './responses_adapter_server.js';
 import {
   mergeOpenAICompatibleProviderCapabilities,
   resolveReasoningEffortForProvider,
@@ -15,7 +14,14 @@ import type {
   ProviderUsageReport,
 } from '../../types/provider.js';
 import type { BridgeSession, SessionSettings } from '../../types/core.js';
-import { buildCodexProviderRelayCliArgs } from '../../../packages/codex-provider-relay/src/index.js';
+import {
+  buildCodexProviderRelayCliArgs,
+  CodexProviderRelayRuntime,
+  type CodexProviderRelayAdapterServerFactory,
+  type CodexProviderRelayHostedToolDeclaration,
+  type CodexProviderRelayProfileMode,
+  type CodexProviderRelayToolStrategy,
+} from '../../../packages/codex-provider-relay/src/index.js';
 
 interface OpenAICompatibleProviderProfileConfig extends Record<string, unknown> {
   cliBin?: string | null;
@@ -29,6 +35,9 @@ interface OpenAICompatibleProviderProfileConfig extends Record<string, unknown> 
   modelCatalogMode?: 'merge' | 'overlay-only';
   upstreamChatCompletionsPath?: string | null;
   ownedBy?: string | null;
+  relayProfileMode?: CodexProviderRelayProfileMode | null;
+  toolStrategy?: CodexProviderRelayToolStrategy | null;
+  hostedTools?: CodexProviderRelayHostedToolDeclaration[] | null;
   capabilities?: OpenAICompatibleProviderCapabilities | null;
 }
 
@@ -52,7 +61,7 @@ export interface OpenAICompatibleProviderDefaults {
 export interface OpenAICompatibleProviderPluginOptions {
   clientFactory?: any;
   reviewRunner?: any;
-  adapterServerFactory?: (options: ConstructorParameters<typeof OpenAICompatibleResponsesAdapterServer>[0]) => OpenAICompatibleResponsesAdapterServer;
+  adapterServerFactory?: CodexProviderRelayAdapterServerFactory;
   fetchImpl?: typeof fetch;
   env?: NodeJS.ProcessEnv;
   defaults?: OpenAICompatibleProviderDefaults;
@@ -72,7 +81,7 @@ interface NormalizedOpenAICompatibleProviderDefaults {
 }
 
 interface OpenAICompatibleCodexClientOptions {
-  adapterServerFactory: (options: ConstructorParameters<typeof OpenAICompatibleResponsesAdapterServer>[0]) => OpenAICompatibleResponsesAdapterServer;
+  adapterServerFactory?: CodexProviderRelayAdapterServerFactory;
   fetchImpl: typeof fetch;
   env: NodeJS.ProcessEnv;
   defaults: NormalizedOpenAICompatibleProviderDefaults;
@@ -110,14 +119,12 @@ export class OpenAICompatibleProviderPlugin extends CodexProviderPlugin {
 
   constructor(options: OpenAICompatibleProviderPluginOptions = {}) {
     const defaults = normalizeProviderDefaults(options.defaults);
-    const adapterServerFactory = options.adapterServerFactory
-      ?? ((serverOptions) => new OpenAICompatibleResponsesAdapterServer(serverOptions));
     const fetchImpl = options.fetchImpl ?? fetch;
     const env = options.env ?? process.env;
     super({
       clientFactory: options.clientFactory
         ?? ((profile: OpenAICompatibleProviderProfile) => createOpenAICompatibleCodexClient(profile, {
-          adapterServerFactory,
+          adapterServerFactory: options.adapterServerFactory,
           fetchImpl,
           env,
           defaults,
@@ -281,14 +288,14 @@ class OpenAICompatibleCodexClient {
 
   private readonly options: OpenAICompatibleCodexClientOptions;
 
-  private adapterServer: OpenAICompatibleResponsesAdapterServer | null;
+  private relayRuntime: CodexProviderRelayRuntime | null;
 
   private delegate: CodexAppClient | null;
 
   constructor(profile: OpenAICompatibleProviderProfile, options: OpenAICompatibleCodexClientOptions) {
     this.profile = profile;
     this.options = options;
-    this.adapterServer = null;
+    this.relayRuntime = null;
     this.delegate = null;
   }
 
@@ -302,46 +309,60 @@ class OpenAICompatibleCodexClient {
       this.options.defaults.capabilities,
       config.capabilities,
     );
-    this.adapterServer = this.options.adapterServerFactory({
+    this.relayRuntime = new CodexProviderRelayRuntime({
       apiKey,
       upstreamBaseUrl: normalizeString(config.baseUrl) || this.options.defaults.baseUrl,
       defaultModel: normalizeString(config.defaultModel) || this.options.defaults.defaultModel,
-      models: normalizeModelCatalog(config.modelCatalog, this.options.defaults.modelIds, providerCapabilities),
-      fetchImpl: this.options.fetchImpl,
-      providerKind: normalizeString(this.profile.providerKind) || this.options.defaults.kind,
+      providerLabel: normalizeProviderLabel(config.providerLabel) || this.options.defaults.providerLabel,
       providerName: this.profile.displayName || this.options.defaults.displayName,
-      providerCapabilities,
-      upstreamResponsesPath: providerCapabilities?.upstreamResponsesPath ?? null,
-      upstreamChatCompletionsPath: normalizeString(config.upstreamChatCompletionsPath) || this.options.defaults.upstreamChatCompletionsPath,
-      ownedBy: normalizeString(config.ownedBy) || this.options.defaults.ownedBy,
-    });
-    await this.adapterServer.start();
-    this.delegate = new CodexAppClient({
-      codexCliBin: normalizeString(config.cliBin) || 'codex',
-      codexCliArgs: buildOpenAICompatibleCodexCliArgs({
-        providerLabel: normalizeProviderLabel(config.providerLabel) || this.options.defaults.providerLabel,
+      profileMode: normalizeRelayProfileMode(config.relayProfileMode) ?? 'pure-api',
+      authMode: 'api-key-compatible',
+      apiKeyEnv: normalizeString(config.apiKeyEnv) || this.options.defaults.apiKeyEnv,
+      supportsWebsockets: false,
+      toolStrategy: normalizeToolStrategy(config.toolStrategy) ?? 'codex-local-first',
+      hostedTools: normalizeHostedTools(config.hostedTools),
+      adapterServerFactory: this.options.adapterServerFactory,
+      adapterOptions: {
+        fetchImpl: this.options.fetchImpl,
+        models: normalizeModelCatalog(config.modelCatalog, this.options.defaults.modelIds, providerCapabilities),
+        providerKind: normalizeString(this.profile.providerKind) || this.options.defaults.kind,
         providerName: this.profile.displayName || this.options.defaults.displayName,
-        adapterBaseUrl: `${this.adapterServer.baseUrl}/v1`,
-        apiKeyEnv: normalizeString(config.apiKeyEnv) || this.options.defaults.apiKeyEnv,
-        defaultModel: normalizeString(config.defaultModel) || this.options.defaults.defaultModel,
-      }),
+        providerCapabilities: providerCapabilities as Record<string, unknown> | null,
+        upstreamResponsesPath: providerCapabilities?.upstreamResponsesPath ?? null,
+        upstreamChatCompletionsPath: normalizeString(config.upstreamChatCompletionsPath) || this.options.defaults.upstreamChatCompletionsPath,
+        ownedBy: normalizeString(config.ownedBy) || this.options.defaults.ownedBy,
+      },
+    });
+    const relayState = await this.relayRuntime.start();
+    const delegate = new CodexAppClient({
+      codexCliBin: normalizeString(config.cliBin) || 'codex',
+      codexCliArgs: relayState.codexCliArgs,
       launchCommand: normalizeString(config.launchCommand) || null,
       autolaunch: Boolean(config.autolaunch),
       modelCatalog: Array.isArray(config.modelCatalog) ? config.modelCatalog as any : [],
       modelCatalogMode: config.modelCatalogMode ?? 'overlay-only',
       logger: createStderrLogger(),
     });
-    await this.delegate.start();
+    this.delegate = delegate;
+    try {
+      await delegate.start();
+    } catch (error) {
+      const relayRuntime = this.relayRuntime;
+      this.delegate = null;
+      this.relayRuntime = null;
+      await relayRuntime?.stop?.().catch(() => {});
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {
     const delegate = this.delegate;
-    const adapter = this.adapterServer;
+    const relayRuntime = this.relayRuntime;
     this.delegate = null;
-    this.adapterServer = null;
+    this.relayRuntime = null;
     await Promise.allSettled([
       delegate?.stop?.(),
-      adapter?.stop?.(),
+      relayRuntime?.stop?.(),
     ]);
   }
 
@@ -393,6 +414,7 @@ export function buildOpenAICompatibleCodexCliArgs({
     providerLabel: label,
     providerName: normalizeString(providerName) || DEFAULT_PROVIDER_DEFAULTS.displayName,
     relayBaseUrl: adapterBaseUrl,
+    relayProtocol: 'responses',
     defaultModel: normalizeString(defaultModel) || DEFAULT_PROVIDER_DEFAULTS.defaultModel,
     authMode: 'api-key-compatible',
     apiKeyEnv: normalizeString(apiKeyEnv) || DEFAULT_PROVIDER_DEFAULTS.apiKeyEnv,
@@ -412,6 +434,27 @@ function resolveApiKey(
     throw new Error(`${providerName} API key is missing. Set ${envName} in the service environment.`);
   }
   return apiKey;
+}
+
+function normalizeRelayProfileMode(value: unknown): CodexProviderRelayProfileMode | null {
+  if (value === 'official' || value === 'mixed' || value === 'pure-api') {
+    return value;
+  }
+  return null;
+}
+
+function normalizeToolStrategy(value: unknown): CodexProviderRelayToolStrategy | null {
+  if (value === 'codex-local-first' || value === 'provider-native' || value === 'relay-emulated') {
+    return value;
+  }
+  return null;
+}
+
+function normalizeHostedTools(value: unknown): CodexProviderRelayHostedToolDeclaration[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  return value.filter((entry): entry is CodexProviderRelayHostedToolDeclaration => Boolean(entry && typeof entry === 'object'));
 }
 
 function normalizeModelCatalog(

@@ -37,21 +37,7 @@ for (const provider of PROVIDERS) {
     timeout: 90_000,
   }, async () => {
     assert.ok(resolved.profile);
-    const server = new OpenAICompatibleResponsesAdapterServer({
-      apiKey: resolved.apiKey,
-      upstreamBaseUrl: resolved.baseUrl,
-      defaultModel: resolved.model,
-      models: resolved.models,
-      providerName: provider.name,
-      providerKind: resolved.profile.providerKind,
-      fetchImpl: ((input, init) => fetch(input, {
-        ...init,
-        signal: AbortSignal.timeout(60_000),
-      })) as typeof fetch,
-      providerCapabilities: resolved.capabilities,
-      upstreamChatCompletionsPath: resolved.upstreamChatCompletionsPath,
-      ownedBy: resolved.ownedBy,
-    });
+    const server = createLiveAdapterServer(provider, resolved);
     await server.start();
     try {
       const modelsResponse = await fetch(`${server.baseUrl}/v1/models`, {
@@ -88,6 +74,94 @@ for (const provider of PROVIDERS) {
       await server.stop();
     }
   });
+
+  test(`live OpenAI-compatible adapter tool-loop smoke: ${provider.name}`, {
+    skip: toolLoopSkipReason(provider, resolved),
+    timeout: 120_000,
+  }, async () => {
+    assert.ok(resolved.profile);
+    const server = createLiveAdapterServer(provider, resolved);
+    await server.start();
+    try {
+      const firstResponse = await fetch(`${server.baseUrl}/v1/responses`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: resolved.model,
+          instructions: [
+            'You must call the relay_echo tool exactly once.',
+            'Set its input to exactly: ping',
+            'Do not answer with normal text before calling the tool.',
+          ].join('\n'),
+          input: 'Call the tool now.',
+          tools: [{
+            type: 'custom',
+            name: 'relay_echo',
+            description: 'Echo a short string through the Codex relay.',
+          }],
+          tool_choice: {
+            type: 'custom',
+            name: 'relay_echo',
+          },
+          max_output_tokens: 1024,
+          stream: false,
+        }),
+        signal: AbortSignal.timeout(80_000),
+      });
+      const firstText = await firstResponse.text();
+      assert.equal(firstResponse.status, 200, `${provider.name} tool-call status ${firstResponse.status}: ${firstText.slice(0, 1000)}`);
+      const firstBody = JSON.parse(firstText);
+      const toolCall = normalizeArray(firstBody?.output)
+        .find((item) => item?.type === 'custom_tool_call' && item?.name === 'relay_echo');
+      assert.ok(toolCall, `${provider.name} did not return relay_echo custom_tool_call: ${firstText.slice(0, 1000)}`);
+      assert.equal(normalizeString(toolCall.input), 'ping');
+      assert.ok(normalizeString(toolCall.call_id), `${provider.name} custom_tool_call missing call_id`);
+
+      const secondResponse = await fetch(`${server.baseUrl}/v1/responses`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: resolved.model,
+          instructions: 'Read the relay_echo tool output and answer exactly: TOOL_OK',
+          input: [
+            toolCall,
+            {
+              type: 'custom_tool_call_output',
+              call_id: toolCall.call_id,
+              output: 'TOOL_OK',
+            },
+            {
+              type: 'message',
+              role: 'user',
+              content: [{
+                type: 'input_text',
+                text: 'The relay_echo tool output was TOOL_OK. Reply with exactly TOOL_OK now.',
+              }],
+            },
+          ],
+          tools: [{
+            type: 'custom',
+            name: 'relay_echo',
+          }],
+          tool_choice: 'none',
+          max_output_tokens: 256,
+          stream: false,
+        }),
+        signal: AbortSignal.timeout(80_000),
+      });
+      const secondText = await secondResponse.text();
+      assert.equal(secondResponse.status, 200, `${provider.name} tool-result status ${secondResponse.status}: ${secondText.slice(0, 1000)}`);
+      const secondBody = JSON.parse(secondText);
+      const outputText = collectResponseOutputText(secondBody);
+      assert.match(outputText, /\bTOOL_OK\b/, `${provider.name} did not complete after tool output: ${outputText}`);
+    } finally {
+      await server.stop();
+    }
+  });
 }
 
 function skipReason(provider: LiveProviderSpec, resolved: ResolvedProvider): string | false {
@@ -99,6 +173,17 @@ function skipReason(provider: LiveProviderSpec, resolved: ResolvedProvider): str
   }
   if (!resolved.apiKey) {
     return `missing API key env: ${resolved.apiKeyEnv || provider.apiKeyEnvHint.join(' or ')}`;
+  }
+  return false;
+}
+
+function toolLoopSkipReason(provider: LiveProviderSpec, resolved: ResolvedProvider): string | false {
+  const baseReason = skipReason(provider, resolved);
+  if (baseReason) {
+    return baseReason;
+  }
+  if (resolved.capabilities?.supportsTools === false) {
+    return `${provider.name} profile declares supportsTools=false`;
   }
   return false;
 }
@@ -131,6 +216,28 @@ function resolveProviderFromCodexBridgeProfile(provider: LiveProviderSpec): Reso
     upstreamChatCompletionsPath: normalizeString(config?.upstreamChatCompletionsPath) || null,
     ownedBy: normalizeString(config?.ownedBy) || null,
   };
+}
+
+function createLiveAdapterServer(
+  provider: LiveProviderSpec,
+  resolved: ResolvedProvider,
+): OpenAICompatibleResponsesAdapterServer {
+  assert.ok(resolved.profile);
+  return new OpenAICompatibleResponsesAdapterServer({
+    apiKey: resolved.apiKey,
+    upstreamBaseUrl: resolved.baseUrl,
+    defaultModel: resolved.model,
+    models: resolved.models,
+    providerName: provider.name,
+    providerKind: resolved.profile.providerKind,
+    fetchImpl: ((input, init) => fetch(input, {
+      ...init,
+      signal: AbortSignal.timeout(60_000),
+    })) as typeof fetch,
+    providerCapabilities: resolved.capabilities,
+    upstreamChatCompletionsPath: resolved.upstreamChatCompletionsPath,
+    ownedBy: resolved.ownedBy,
+  });
 }
 
 function collectResponseOutputText(response: any): string {

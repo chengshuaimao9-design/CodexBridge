@@ -6,10 +6,11 @@ const repoRoot = process.cwd();
 const packageRoot = path.join(repoRoot, 'packages', 'codex-gateway');
 const sourceRoot = path.join(packageRoot, 'src');
 const legacyShimFiles = new Map([
-  ['src/providers/openai_compatible/responses_adapter.ts', "export * from '../../../packages/codex-gateway/src/converters/responses_adapter.js';"],
-  ['src/providers/openai_compatible/responses_adapter_server.ts', "export * from '../../../packages/codex-gateway/src/server/responses_adapter_server.js';"],
-  ['src/providers/openai_compatible/capability_presets.ts', "export * from '../../../packages/codex-gateway/src/capabilities/capability_presets.js';"],
-  ['src/providers/shared/thinking_policy.ts', "export * from '../../../packages/codex-gateway/src/capabilities/thinking_policy.js';"],
+  ['src/providers/openai_compatible/responses_adapter.ts', "export * from '../../../packages/codex-provider-relay/src/converters/responses_adapter.js';"],
+  ['src/providers/openai_compatible/responses_adapter_server.ts', "export * from '../../../packages/codex-provider-relay/src/server/responses_adapter_server.js';"],
+  ['src/providers/openai_compatible/capability_presets.ts', "export * from '../../../packages/codex-provider-relay/src/capabilities/capability_presets.js';"],
+  ['src/providers/openai_compatible/cliproxy_model_catalog.ts', "export * from '../../../packages/codex-provider-relay/src/capabilities/cliproxy_model_catalog.js';"],
+  ['src/providers/shared/thinking_policy.ts', "export * from '../../../packages/codex-provider-relay/src/capabilities/thinking_policy.js';"],
 ]);
 const nodeBuiltins = new Set([
   ...builtinModules,
@@ -96,7 +97,7 @@ for (const [relativePath, expectedContent] of legacyShimFiles) {
   const actualContent = normalizeText(fs.readFileSync(absolutePath, 'utf8'));
   if (actualContent !== expectedContent) {
     failures.push(
-      `${relativePath} must remain a pure re-export shim pointing into packages/codex-gateway`,
+      `${relativePath} must remain a pure re-export shim pointing into packages/codex-provider-relay`,
     );
   }
 }

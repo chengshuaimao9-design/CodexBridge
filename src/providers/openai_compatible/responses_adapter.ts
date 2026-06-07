@@ -1,1 +1,1 @@
-export * from '../../../packages/codex-gateway/src/converters/responses_adapter.js';
+export * from '../../../packages/codex-provider-relay/src/converters/responses_adapter.js';

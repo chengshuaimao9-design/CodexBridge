@@ -14,22 +14,35 @@ This target is intentionally narrower than "support more providers" and broader 
 ## Architecture Boundary
 
 ```text
-CodexBridge / CodexNext / future app-server UI
+Host app UI (CodexBridge / CodexNext / future app-server)
   -> codex-provider-relay package
-     -> codex-gateway protocol conversion
+     -> provider config/profile builder
+     -> protocol conversion
+     -> local Responses adapter server
      -> upstream provider client
   -> Codex app-server
 ```
 
-`codex-provider-relay` is the integration SDK. It may depend on protocol conversion from `codex-gateway`, but it must not depend on CodexBridge platform adapters, Web UI components, session stores, or provider-specific UI state.
+`codex-provider-relay` is the integration SDK and owns provider config/profile generation, protocol conversion, provider capability policy, and the local Responses adapter server. It must not depend on host-app platform adapters, Web UI components, session stores, or provider-specific UI state.
 
 `codex-native-api` remains separate. It exposes logged-in Codex runtime behavior as an API facade; it is not the provider relay.
 
 ## Required Modes
 
+### Official
+
+Use this when the upstream already speaks a Codex-compatible Responses API. Codex points directly at the upstream `base_url`, and no local Responses adapter is required.
+
+Profile defaults:
+
+- `mode = "official"`
+- `relayProtocol = "responses"`
+- `authMode = "codex-auth-compatible"`
+- `needsLocalResponsesAdapter = false`
+
 ### Codex Auth Compatible
 
-The relay should support the Codex++-style provider configuration:
+The mixed profile supports the Codex++-style provider configuration:
 
 ```toml
 model_provider = "custom"
@@ -46,9 +59,16 @@ supports_websockets = false
 
 This mode is the canonical path for preserving Codex-native behavior while redirecting model requests.
 
+Profile defaults:
+
+- `mode = "mixed"`
+- `relayProtocol = "chat-completions"`
+- `authMode = "codex-auth-compatible"`
+- `needsLocalResponsesAdapter = true`
+
 ### API Key Compatible
 
-The relay may also keep the existing OpenAI-compatible fallback:
+The pure API profile keeps the existing OpenAI-compatible fallback:
 
 ```toml
 requires_openai_auth = false
@@ -56,6 +76,13 @@ env_key = "OPENAI_API_KEY"
 ```
 
 This mode is useful for compatibility, but it is not the long-term default for full Codex tool-loop parity.
+
+Profile defaults:
+
+- `mode = "pure-api"`
+- `relayProtocol = "chat-completions"`
+- `authMode = "api-key-compatible"`
+- `needsLocalResponsesAdapter = true`
 
 ## Tool Strategy Contract
 
@@ -67,16 +94,31 @@ Default. Codex remains the executor for local tools and approvals. The relay tra
 
 Only for upstream providers that truly support a hosted tool capability. The relay may forward provider-native tool options when declared in provider capabilities.
 
+Profiles using this strategy must declare each hosted tool, for example `web_search -> web_search_preview`.
+
 ### `relay-emulated`
 
 For capabilities such as web search or file search when the upstream provider does not natively support them. The relay or an attached MCP/search/file service must execute the tool and feed results back into the model loop.
 
+Profiles using this strategy must declare each relay-owned hosted tool, for example `file_search -> mcp_file_search`.
+
+Current package support:
+
+- `web_search` can be declared as `relay-emulated` and backed by a host-provided executor registry.
+- The SDK includes fetch-based `web_search` executor factories for Tavily, Brave Search, and Serper; hosts pass keys at runtime.
+- Non-streaming Chat Completions loops are executed inside the relay: upstream tool call -> relay executor -> tool output message -> follow-up upstream call -> Codex-compatible Responses result.
+- Streaming Chat Completions loops are executed inside the relay: upstream streamed relay tool-call deltas are consumed internally, the executor result is appended as a tool message, and the follow-up upstream answer stream is forwarded through the existing Responses SSE translator.
+- Exposing hosted-tool execution progress itself as ordered observable SSE events is intentionally not treated as complete yet.
+
 ## Migration Plan
 
 1. Establish this package with the fixed target, config builders, and public types.
-2. Move Codex app-server provider config generation out of `src/providers/openai_compatible/plugin.ts`.
-3. Wrap the existing `OpenAICompatibleResponsesAdapterServer` through this package instead of instantiating it directly from CodexBridge provider code.
+2. Move Codex app-server provider config generation into this package and keep host-app adapters as consumers.
+3. Wrap local Responses adapter lifecycle through this package without importing host-app adapter types.
 4. Add Codex++ compatible auth mode using `requires_openai_auth = true`.
 5. Add contract tests for `function_call`, `custom_tool_call`, `namespace`, `apply_patch`, `web_search`, and streaming tool deltas.
-6. Switch CodexBridge provider code to consume this package.
+6. Switch CodexBridge provider code to consume this package through host-side adapter options.
 7. Allow CodexNext to consume the same package without importing CodexBridge internals.
+8. Expose high-level official/mixed/pure API profile builders so app-servers can avoid invalid auth/protocol combinations.
+9. Keep `codex-gateway` only as a temporary compatibility package or historical reference; new consumers should import only `@codexbridge/codex-provider-relay`.
+10. Extend relay-emulated hosted tools with explicit observable execution events, then add file/search/code/image/computer executors as separate adapters.

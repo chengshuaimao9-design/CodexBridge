@@ -22,6 +22,9 @@ import {
   reconstructApplyPatchInput,
   reconstructCustomToolCallInput,
 } from './apply_patch_proxy.js';
+import type {
+  NormalizedCodexProviderRelayHostedToolDeclaration,
+} from '../hosted_tools.js';
 
 type JsonRecord = Record<string, any>;
 type ToolNameMap = Map<string, string>;
@@ -34,6 +37,7 @@ export interface ResponsesToChatOptions {
   stream?: boolean | null;
   providerKind?: string | null;
   providerCapabilities?: OpenAICompatibleProviderCapabilities | null;
+  hostedTools?: NormalizedCodexProviderRelayHostedToolDeclaration[] | null;
   compact?: boolean | null;
 }
 
@@ -125,6 +129,7 @@ export function responsesRequestToChatCompletions(
     stream: Boolean(options.stream ?? request?.stream),
   };
   const builtinWebSearchTransport = resolveBuiltinWebSearchTransport(providerCapabilities);
+  const relayEmulatedWebSearch = resolveRelayEmulatedWebSearchTool(options.hostedTools);
 
   copyIfPresent(request, chat, 'temperature');
   copyIfPresent(request, chat, 'top_p');
@@ -192,6 +197,7 @@ export function responsesRequestToChatCompletions(
         options.providerKind,
         providerCapabilities,
         builtinWebSearchTransport,
+        relayEmulatedWebSearch,
       ),
     })
     : [];
@@ -204,6 +210,7 @@ export function responsesRequestToChatCompletions(
         providerCapabilities,
         toolNameMap,
         builtinWebSearchTransport,
+        relayEmulatedWebSearch,
       );
       if (toolChoice !== undefined) {
         chat.tool_choice = toolChoice;
@@ -1060,11 +1067,15 @@ function convertResponsesToolToChatTool(
   providerCapabilities: OpenAICompatibleProviderCapabilities | null = null,
   toolNameMap: ToolNameMap = new Map(),
   builtinWebSearchTransport: 'openai_tool' | 'chat_enable_search' = 'openai_tool',
+  relayEmulatedWebSearch: NormalizedCodexProviderRelayHostedToolDeclaration | null = null,
 ): JsonRecord | null {
   if (!tool || typeof tool !== 'object') {
     return null;
   }
   const type = normalizeString(tool.type);
+  if (isBuiltinToolType(type) && relayEmulatedWebSearch) {
+    return buildRelayEmulatedWebSearchChatTool(tool, relayEmulatedWebSearch);
+  }
   const normalizedBuiltinType = normalizeBuiltinToolType(
     type,
     providerKind,
@@ -1097,8 +1108,12 @@ function convertResponsesToolChoiceToChatToolChoice(
   providerCapabilities: OpenAICompatibleProviderCapabilities | null = null,
   toolNameMap: ToolNameMap = new Map(),
   builtinWebSearchTransport: 'openai_tool' | 'chat_enable_search' = 'openai_tool',
+  relayEmulatedWebSearch: NormalizedCodexProviderRelayHostedToolDeclaration | null = null,
 ): unknown {
   if (typeof toolChoice === 'string') {
+    if (isBuiltinToolType(toolChoice) && relayEmulatedWebSearch) {
+      return buildForcedFunctionToolChoice(relayEmulatedWebSearch.relayToolName || relayEmulatedWebSearch.name);
+    }
     const normalizedBuiltinType = normalizeBuiltinToolType(
       toolChoice,
       providerKind,
@@ -1119,6 +1134,9 @@ function convertResponsesToolChoiceToChatToolChoice(
 
   const record = { ...(toolChoice as JsonRecord) };
   const rawType = normalizeString(record.type);
+  if (isBuiltinToolType(rawType) && relayEmulatedWebSearch) {
+    return buildForcedFunctionToolChoice(relayEmulatedWebSearch.relayToolName || relayEmulatedWebSearch.name);
+  }
   const normalizedType = normalizeBuiltinToolType(
     rawType,
     providerKind,
@@ -1178,6 +1196,7 @@ function convertResponsesToolChoiceToChatToolChoice(
         providerCapabilities,
         toolNameMap,
         builtinWebSearchTransport,
+        relayEmulatedWebSearch,
       ))
       .filter(Boolean);
     if (record.tools.length === 0) {
@@ -1240,9 +1259,13 @@ function convertResponsesBuiltinToolToChatTool(
   providerKind?: string | null,
   providerCapabilities: OpenAICompatibleProviderCapabilities | null = null,
   builtinWebSearchTransport: 'openai_tool' | 'chat_enable_search' = 'openai_tool',
+  relayEmulatedWebSearch: NormalizedCodexProviderRelayHostedToolDeclaration | null = null,
 ): JsonRecord | null {
   if (!tool || typeof tool !== 'object') {
     return null;
+  }
+  if (isBuiltinToolType(tool.type) && relayEmulatedWebSearch) {
+    return buildRelayEmulatedWebSearchChatTool(tool, relayEmulatedWebSearch);
   }
   const normalizedBuiltinType = normalizeBuiltinToolType(
     tool.type,
@@ -1256,6 +1279,65 @@ function convertResponsesBuiltinToolToChatTool(
       type: normalizedBuiltinType,
     })
     : null;
+}
+
+function resolveRelayEmulatedWebSearchTool(
+  hostedTools: NormalizedCodexProviderRelayHostedToolDeclaration[] | null | undefined,
+): NormalizedCodexProviderRelayHostedToolDeclaration | null {
+  if (!Array.isArray(hostedTools)) {
+    return null;
+  }
+  return hostedTools.find((tool) => (
+    tool?.name === 'web_search'
+    && tool.mode === 'relay-emulated'
+    && normalizeString(tool.relayToolName || tool.name)
+  )) ?? null;
+}
+
+function buildRelayEmulatedWebSearchChatTool(
+  tool: JsonRecord,
+  declaration: NormalizedCodexProviderRelayHostedToolDeclaration,
+): JsonRecord {
+  const relayToolName = normalizeString(declaration.relayToolName) || declaration.name;
+  return {
+    type: 'function',
+    function: omitUndefined({
+      name: relayToolName,
+      description: normalizeString(declaration.description)
+        || normalizeString(tool.description)
+        || 'Search the web for current information and return concise cited results.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'The web search query.',
+          },
+          search_context_size: {
+            type: 'string',
+            enum: ['low', 'medium', 'high'],
+            description: 'Requested search depth when available.',
+          },
+          user_location: {
+            type: 'object',
+            description: 'Optional user location hints from the original request.',
+            additionalProperties: true,
+          },
+        },
+        required: ['query'],
+        additionalProperties: true,
+      },
+    }),
+  };
+}
+
+function buildForcedFunctionToolChoice(functionName: string): JsonRecord {
+  return {
+    type: 'function',
+    function: {
+      name: functionName,
+    },
+  };
 }
 
 function isBuiltinToolType(type: unknown): boolean {

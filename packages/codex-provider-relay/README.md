@@ -1,6 +1,6 @@
 # Codex Provider Relay
 
-`@codexbridge/codex-provider-relay` is the reusable relay SDK for CodexBridge, CodexNext, and future Codex app-server projects.
+`@codexbridge/codex-provider-relay` is the reusable relay SDK for Codex app-server integrations, including CodexBridge, CodexNext, and future host apps.
 
 ## Fixed Goal
 
@@ -19,10 +19,10 @@ Codex app-server
 
 ## Non-Goals
 
-- Do not merge `codex-gateway` and `codex-native-api`.
-- Do not move BridgeSession, platform adapters, or Web UI state into this package.
+- Do not merge `codex-native-api` into this package.
+- Do not move host-app session stores, platform adapters, or Web UI state into this package.
 - Do not pretend every upstream provider has OpenAI hosted tools.
-- Do not hardcode CodexBridge-specific runtime state.
+- Do not hardcode host-app-specific runtime state.
 
 ## Canonical Strategy
 
@@ -36,13 +36,29 @@ Provider-native tools and relay-emulated tools are explicit opt-ins:
 - `provider-native`: forward provider-supported hosted tools when the upstream truly supports them.
 - `relay-emulated`: implement missing hosted tools in the relay or via MCP/search/file services.
 
+`provider-native` and `relay-emulated` profiles must include explicit hosted tool declarations. A profile cannot silently claim hosted tool behavior just because a provider appears compatible.
+
 ## First Stable Surface
 
-This package currently defines the fixed target, tool strategy types, protocol-aware Codex provider config builders, and Codex++-style local proxy URL helpers.
+This package currently defines the fixed target, tool strategy types, protocol-aware Codex provider config builders, high-level official/mixed/pure API profile builders, Codex++-style local proxy URL helpers, protocol converters, provider capability presets, and the local Responses adapter server.
 
-For `responses` upstreams, Codex provider `base_url` points at the upstream Responses endpoint. For `chat-completions` upstreams, Codex provider `base_url` points at the local Responses proxy, while the third-party Chat Completions endpoint remains relay-owned configuration. This is required so the Codex native tool-call loop passes through `packages/codex-gateway` instead of bypassing conversion.
+For `responses` upstreams, Codex provider `base_url` points at the upstream Responses endpoint. For `chat-completions` upstreams, Codex provider `base_url` points at this package's local Responses proxy, while the third-party Chat Completions endpoint remains relay-owned configuration. This is required so the Codex native tool-call loop passes through conversion instead of bypassing it.
 
-The existing OpenAI-compatible Codex launch args now reuse this package. The next implementation phase will move the adapter server lifecycle wrapper from CodexBridge into this package and continue reusing `packages/codex-gateway` for protocol conversion.
+`CodexProviderRelayRuntime` starts and stops the built-in local Responses adapter server by default, exposes the local `baseUrl`, and returns Codex app-server launch config. Advanced hosts can still override `adapterServerFactory`, but CodexBridge, CodexNext, or any future app-server project no longer needs a second package to start the relay lifecycle.
+
+Relay-emulated hosted tools now have a package-level executor registry. When a host declares `web_search` as `relay-emulated` and registers a `web_search` executor, the local adapter exposes that capability to Chat Completions upstreams as a function tool, executes the returned tool call inside the relay, appends the tool output, and continues the upstream model loop before returning a Codex-compatible Responses result. Streaming clients keep a real streaming path: the relay consumes internal streamed tool-call deltas, runs the executor, then forwards the follow-up upstream answer stream through the existing Responses SSE translator. Exposing the hosted-tool execution process itself as ordered observable SSE events remains a follow-up.
+
+Hosts can bring their own executor or use the built-in `createCodexProviderRelayWebSearchExecutor` factory for Tavily, Brave Search, or Serper. The SDK only accepts keys through runtime options; it does not load or store provider secrets.
+
+The profile surface exposes the safe presets app-servers should use:
+
+| Mode | Codex auth | Upstream protocol | Local adapter | Use case |
+| --- | --- | --- | --- | --- |
+| `official` | `codex-auth-compatible` | `responses` | No | Direct Responses-compatible provider. |
+| `mixed` | `codex-auth-compatible` | `chat-completions` | Yes | Codex++ style relay: Codex sees Responses, relay owns upstream API calls. |
+| `pure-api` | `api-key-compatible` | `chat-completions` | Yes | API-key-only fallback for OpenAI-compatible providers. |
+
+The next implementation phase is splitting the low-level adapter converter into smaller request, response, and SSE modules while preserving the current public facade.
 
 See [docs/TARGET.md](docs/TARGET.md) for the locked target and phased migration plan.
 

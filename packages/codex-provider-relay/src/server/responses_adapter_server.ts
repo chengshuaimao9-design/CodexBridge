@@ -19,6 +19,17 @@ import {
   OpenAICompatibleProviderCapabilities,
   OpenAICompatibleRetryCapabilities,
 } from '../capabilities/thinking_policy.js';
+import {
+  normalizeCodexProviderRelayHostedTools,
+  type CodexProviderRelayHostedToolDeclaration,
+  type NormalizedCodexProviderRelayHostedToolDeclaration,
+} from '../hosted_tools.js';
+import {
+  createCodexProviderRelayHostedToolExecutorRegistry,
+  formatCodexProviderRelayHostedToolExecutionResult,
+  type CodexProviderRelayHostedToolExecutorRegistry,
+  type CodexProviderRelayHostedToolExecutorRegistryInput,
+} from '../hosted_tool_executors.js';
 
 type JsonRecord = Record<string, any>;
 type AdapterRoute = 'responses' | 'responses.compact';
@@ -125,6 +136,14 @@ export type CodexGatewayTraceEvent =
     type: 'stream.completed';
     route: 'responses';
     eventCount: number;
+  }
+  | {
+    type: 'hosted_tool.executed';
+    route: 'responses';
+    toolName: string;
+    relayToolName: string;
+    callId: string;
+    iteration: number;
   };
 
 export type CodexGatewayTraceSink = (event: CodexGatewayTraceEvent) => void;
@@ -144,6 +163,9 @@ export interface OpenAICompatibleResponsesAdapterServerOptions {
   upstreamChatCompletionsPath?: string | null;
   ownedBy?: string | null;
   traceSink?: CodexGatewayTraceSink | null;
+  hostedTools?: CodexProviderRelayHostedToolDeclaration[] | null;
+  hostedToolExecutors?: CodexProviderRelayHostedToolExecutorRegistryInput;
+  maxHostedToolIterations?: number | null;
 }
 
 const DEFAULT_UPSTREAM_BASE_URL = 'https://api.openai.com/v1';
@@ -180,6 +202,14 @@ export class OpenAICompatibleResponsesAdapterServer {
 
   private readonly traceSink: CodexGatewayTraceSink | null;
 
+  private readonly hostedTools: NormalizedCodexProviderRelayHostedToolDeclaration[];
+
+  private readonly executableHostedTools: NormalizedCodexProviderRelayHostedToolDeclaration[];
+
+  private readonly hostedToolExecutorRegistry: CodexProviderRelayHostedToolExecutorRegistry;
+
+  private readonly maxHostedToolIterations: number;
+
   private server: http.Server | null;
 
   private startedUrl: string | null;
@@ -199,6 +229,9 @@ export class OpenAICompatibleResponsesAdapterServer {
     upstreamChatCompletionsPath = '/chat/completions',
     ownedBy = 'openai-compatible',
     traceSink = null,
+    hostedTools = null,
+    hostedToolExecutors = null,
+    maxHostedToolIterations = null,
   }: OpenAICompatibleResponsesAdapterServerOptions) {
     const normalizedKey = normalizeString(apiKey);
     if (!normalizedKey) {
@@ -218,6 +251,13 @@ export class OpenAICompatibleResponsesAdapterServer {
     this.upstreamChatCompletionsPath = normalizePath(upstreamChatCompletionsPath) || '/chat/completions';
     this.ownedBy = normalizeString(ownedBy) || this.providerKind;
     this.traceSink = typeof traceSink === 'function' ? traceSink : null;
+    this.hostedTools = normalizeCodexProviderRelayHostedTools(hostedTools);
+    this.hostedToolExecutorRegistry = createCodexProviderRelayHostedToolExecutorRegistry(hostedToolExecutors);
+    this.executableHostedTools = this.hostedTools.filter((tool) => (
+      tool.mode !== 'relay-emulated'
+      || this.hostedToolExecutorRegistry.has(tool.name)
+    ));
+    this.maxHostedToolIterations = normalizePositiveInteger(maxHostedToolIterations) ?? 4;
     this.models = normalizeModels(
       models,
       this.defaultModel,
@@ -350,11 +390,17 @@ export class OpenAICompatibleResponsesAdapterServer {
       );
       return;
     }
+    const relayHostedToolExecutionRequired = requestUsesExecutableRelayHostedTool(
+      requestBody,
+      this.executableHostedTools,
+    );
+    const upstreamStream = stream;
     const chatBody = responsesRequestToChatCompletions(requestBody, {
       model: requestedModel,
-      stream,
+      stream: upstreamStream,
       providerKind: this.providerKind,
       providerCapabilities: effectiveCapabilities,
+      hostedTools: this.executableHostedTools,
     });
     this.emitTrace({
       type: 'request.translated',
@@ -368,6 +414,7 @@ export class OpenAICompatibleResponsesAdapterServer {
       request: requestBody,
       upstreamRequest: chatBody,
       providerCapabilities: effectiveCapabilities,
+      hostedTools: this.executableHostedTools,
     });
     if (adjustments.length > 0) {
       this.emitTrace({
@@ -378,7 +425,7 @@ export class OpenAICompatibleResponsesAdapterServer {
         adjustments,
       });
     }
-    if (stream) {
+    if (upstreamStream) {
       chatBody.stream_options = {
         ...(chatBody.stream_options && typeof chatBody.stream_options === 'object' ? chatBody.stream_options : {}),
         include_usage: true,
@@ -390,10 +437,22 @@ export class OpenAICompatibleResponsesAdapterServer {
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json',
-        Accept: stream ? 'text/event-stream' : 'application/json',
+        Accept: body?.stream ? 'text/event-stream' : 'application/json',
       },
       body: JSON.stringify(body),
     });
+    if (stream && relayHostedToolExecutionRequired) {
+      await this.writeRelayHostedToolStreamingResponse({
+        requestBody,
+        chatBody,
+        upstreamUrl,
+        buildUpstreamInit,
+        providerCapabilities: effectiveCapabilities,
+        requestedModel,
+        response,
+      });
+      return;
+    }
     let upstream = await this.fetchUpstreamWithRetry(
       upstreamUrl,
       buildUpstreamInit(chatBody),
@@ -450,11 +509,11 @@ export class OpenAICompatibleResponsesAdapterServer {
       writeJson(response, upstream.response.status || 502, { error });
       return;
     }
-    if (stream) {
+    if (upstreamStream) {
       await this.writeStreamingResponse(requestBody, effectiveCapabilities, upstream.response, response);
       return;
     }
-    const json = await upstream.response.json() as JsonRecord;
+    let json = await upstream.response.json() as JsonRecord;
     if (!json || typeof json !== 'object') {
       const error = buildMalformedUpstreamPayloadError(
         this.providerName,
@@ -469,6 +528,26 @@ export class OpenAICompatibleResponsesAdapterServer {
       writeJson(response, 502, { error });
       return;
     }
+    const hostedToolLoop = await this.completeRelayHostedToolLoop({
+      requestBody,
+      chatBody,
+      initialJson: json,
+      upstreamUrl,
+      buildUpstreamInit,
+      providerCapabilities: effectiveCapabilities,
+      requestedModel,
+    });
+    if (hostedToolLoop.error) {
+      this.emitTrace({
+        type: 'upstream.error',
+        route: 'responses',
+        status: hostedToolLoop.status,
+        error: hostedToolLoop.error,
+      });
+      writeJson(response, hostedToolLoop.status, { error: hostedToolLoop.error });
+      return;
+    }
+    json = hostedToolLoop.json;
     try {
       const modelMetadata = resolveModelMetadata(
         this.models,
@@ -486,6 +565,10 @@ export class OpenAICompatibleResponsesAdapterServer {
         stream: false,
         response: adaptedResponse,
       });
+      if (stream && relayHostedToolExecutionRequired) {
+        await this.writeSyntheticStreamingResponse(adaptedResponse, response);
+        return;
+      }
       writeJson(response, 200, adaptedResponse);
     } catch (error) {
       const malformedError = buildMalformedUpstreamPayloadError(
@@ -571,6 +654,297 @@ export class OpenAICompatibleResponsesAdapterServer {
       });
       response.end(text);
     }
+  }
+
+  private async completeRelayHostedToolLoop({
+    requestBody,
+    chatBody,
+    initialJson,
+    upstreamUrl,
+    buildUpstreamInit,
+    providerCapabilities,
+    requestedModel,
+  }: {
+    requestBody: JsonRecord;
+    chatBody: JsonRecord;
+    initialJson: JsonRecord;
+    upstreamUrl: string;
+    buildUpstreamInit: (body: JsonRecord) => RequestInit;
+    providerCapabilities: OpenAICompatibleProviderCapabilities | null;
+    requestedModel: string;
+  }): Promise<{
+    json: JsonRecord;
+    status: number;
+    error: JsonRecord | null;
+  }> {
+    if (this.executableHostedTools.length === 0) {
+      return {
+        json: initialJson,
+        status: 200,
+        error: null,
+      };
+    }
+
+    let currentJson = initialJson;
+    const loopChatBody = cloneJson(chatBody);
+    for (let iteration = 1; iteration <= this.maxHostedToolIterations; iteration += 1) {
+      const executableCalls = collectRelayHostedToolCalls(
+        currentJson,
+        this.executableHostedTools,
+        this.hostedToolExecutorRegistry,
+      );
+      if (executableCalls.length === 0) {
+        return {
+          json: currentJson,
+          status: 200,
+          error: null,
+        };
+      }
+
+      for (const { message, toolCalls } of groupRelayHostedToolCallsByMessage(executableCalls)) {
+        loopChatBody.messages.push(buildAssistantToolCallMessage(message, toolCalls.map((entry) => entry.toolCall)));
+        for (const entry of toolCalls) {
+          const executionResult = await this.executeRelayHostedToolCall(
+            entry,
+            iteration,
+            requestedModel,
+          );
+          loopChatBody.messages.push({
+            role: 'tool',
+            tool_call_id: executionResult.callId,
+            content: executionResult.content,
+          });
+        }
+      }
+
+      const upstream = await this.fetchUpstreamWithRetry(
+        upstreamUrl,
+        buildUpstreamInit(loopChatBody),
+        'responses',
+        providerCapabilities,
+      );
+      if (!upstream.response.ok) {
+        return {
+          json: currentJson,
+          status: upstream.response.status || 502,
+          error: normalizeUpstreamError(
+            upstream.errorText ?? '',
+            this.providerName,
+            upstream.response.status,
+            upstream.response.headers,
+          ),
+        };
+      }
+      currentJson = await upstream.response.json() as JsonRecord;
+      if (!currentJson || typeof currentJson !== 'object') {
+        return {
+          json: currentJson,
+          status: 502,
+          error: buildMalformedUpstreamPayloadError(
+            this.providerName,
+            'non_object_json_response_after_hosted_tool_execution',
+          ),
+        };
+      }
+    }
+
+    return {
+      json: currentJson,
+      status: 502,
+      error: {
+        message: `Relay-emulated hosted tool loop exceeded ${this.maxHostedToolIterations} iterations.`,
+        type: 'unsupported_feature',
+        code: 'hosted_tool_loop_exceeded',
+      },
+    };
+  }
+
+  private async writeRelayHostedToolStreamingResponse({
+    requestBody,
+    chatBody,
+    upstreamUrl,
+    buildUpstreamInit,
+    providerCapabilities,
+    requestedModel,
+    response,
+  }: {
+    requestBody: JsonRecord;
+    chatBody: JsonRecord;
+    upstreamUrl: string;
+    buildUpstreamInit: (body: JsonRecord) => RequestInit;
+    providerCapabilities: OpenAICompatibleProviderCapabilities | null;
+    requestedModel: string;
+    response: ServerResponse;
+  }): Promise<void> {
+    const loopChatBody = cloneJson(chatBody);
+    loopChatBody.stream = true;
+    loopChatBody.stream_options = {
+      ...(loopChatBody.stream_options && typeof loopChatBody.stream_options === 'object' ? loopChatBody.stream_options : {}),
+      include_usage: true,
+    };
+
+    for (let iteration = 1; iteration <= this.maxHostedToolIterations; iteration += 1) {
+      let upstream = await this.fetchUpstreamWithRetry(
+        upstreamUrl,
+        buildUpstreamInit(loopChatBody),
+        'responses',
+        providerCapabilities,
+      );
+      if (shouldRetryWithoutForcedToolChoice(loopChatBody, upstream)) {
+        const before = loopChatBody.tool_choice;
+        delete loopChatBody.tool_choice;
+        this.emitTrace({
+          type: 'request.adjusted',
+          route: 'responses',
+          model: requestedModel,
+          stream: true,
+          adjustments: [{
+            kind: 'tool_choice_dropped',
+            path: 'tool_choice',
+            reason: 'upstream_rejected_forced_tool_choice',
+            before,
+          }],
+        });
+        this.emitTrace({
+          type: 'upstream.retry',
+          route: 'responses',
+          attempt: 1,
+          nextAttempt: 2,
+          status: upstream.response.status || null,
+          reason: 'status',
+          delayMs: 0,
+        });
+        upstream = await this.fetchUpstreamWithRetry(
+          upstreamUrl,
+          buildUpstreamInit(loopChatBody),
+          'responses',
+          providerCapabilities,
+        );
+      }
+      if (!upstream.response.ok) {
+        const error = normalizeUpstreamError(
+          upstream.errorText ?? '',
+          this.providerName,
+          upstream.response.status,
+          upstream.response.headers,
+        );
+        this.emitTrace({
+          type: 'upstream.error',
+          route: 'responses',
+          status: upstream.response.status || 502,
+          error,
+        });
+        writeJson(response, upstream.response.status || 502, { error });
+        return;
+      }
+      if (!upstream.response.body) {
+        writeJson(response, 502, {
+          error: {
+            message: `${this.providerName} upstream returned no stream body.`,
+            type: 'upstream_error',
+          },
+        });
+        return;
+      }
+
+      const decision = await inspectRelayHostedStreamingTurn(
+        readSseDataLines(upstream.response.body),
+        this.executableHostedTools,
+        this.hostedToolExecutorRegistry,
+      );
+      if (decision.kind === 'final_stream') {
+        await this.writeStreamingDataLinesResponse(
+          requestBody,
+          providerCapabilities,
+          chainSseDataLines(decision.bufferedChunks, decision.remaining),
+          response,
+        );
+        return;
+      }
+      if (decision.kind === 'error') {
+        writeJson(response, 502, {
+          error: {
+            message: decision.message,
+            type: 'unsupported_feature',
+            code: 'relay_hosted_streaming_tool_mix_unsupported',
+          },
+        });
+        return;
+      }
+
+      loopChatBody.messages.push(buildAssistantToolCallMessage({
+        content: '',
+      }, decision.calls.map((entry) => entry.toolCall)));
+      for (const entry of decision.calls) {
+        const executionResult = await this.executeRelayHostedToolCall(
+          entry,
+          iteration,
+          requestedModel,
+        );
+        loopChatBody.messages.push({
+          role: 'tool',
+          tool_call_id: executionResult.callId,
+          content: executionResult.content,
+        });
+      }
+    }
+
+    writeJson(response, 502, {
+      error: {
+        message: `Relay-emulated hosted tool streaming loop exceeded ${this.maxHostedToolIterations} iterations.`,
+        type: 'unsupported_feature',
+        code: 'hosted_tool_streaming_loop_exceeded',
+      },
+    });
+  }
+
+  private async executeRelayHostedToolCall(
+    entry: RelayHostedToolCall,
+    iteration: number,
+    requestedModel: string,
+  ): Promise<{
+    callId: string;
+    content: string;
+  }> {
+    const callId = normalizeString(entry.toolCall?.id) || `call_${iteration}`;
+    const relayToolName = normalizeString(entry.toolCall?.function?.name)
+      || normalizeString(entry.declaration.relayToolName)
+      || entry.declaration.name;
+    const rawArguments = normalizeString(entry.toolCall?.function?.arguments) || '{}';
+    let content: string;
+    try {
+      const result = await this.hostedToolExecutorRegistry.execute({
+        toolName: entry.declaration.name,
+        relayToolName,
+        callId,
+        arguments: parseToolCallArguments(rawArguments),
+        rawArguments,
+        model: requestedModel || null,
+        providerKind: this.providerKind,
+        providerName: this.providerName,
+      });
+      content = formatCodexProviderRelayHostedToolExecutionResult(result);
+    } catch (error) {
+      content = JSON.stringify({
+        error: {
+          message: error instanceof Error ? error.message : String(error),
+          type: 'hosted_tool_execution_error',
+        },
+      });
+    }
+
+    this.emitTrace({
+      type: 'hosted_tool.executed',
+      route: 'responses',
+      toolName: entry.declaration.name,
+      relayToolName,
+      callId,
+      iteration,
+    });
+    return {
+      callId,
+      content,
+    };
   }
 
   private async handleCompactResponses(
@@ -739,6 +1113,20 @@ export class OpenAICompatibleResponsesAdapterServer {
       });
       return;
     }
+    await this.writeStreamingDataLinesResponse(
+      requestBody,
+      providerCapabilities,
+      readSseDataLines(upstream.body),
+      response,
+    );
+  }
+
+  private async writeStreamingDataLinesResponse(
+    requestBody: JsonRecord,
+    providerCapabilities: OpenAICompatibleProviderCapabilities | null,
+    dataLines: AsyncIterable<string>,
+    response: ServerResponse,
+  ): Promise<void> {
     response.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache',
@@ -746,7 +1134,7 @@ export class OpenAICompatibleResponsesAdapterServer {
     });
     let eventCount = 0;
     for await (const event of translateChatCompletionsSseStreamToResponsesSse(
-      readSseDataLines(upstream.body),
+      dataLines,
       {
         request: requestBody,
         providerCapabilities,
@@ -774,6 +1162,34 @@ export class OpenAICompatibleResponsesAdapterServer {
     response.end();
   }
 
+  private async writeSyntheticStreamingResponse(
+    adaptedResponse: JsonRecord,
+    response: ServerResponse,
+  ): Promise<void> {
+    response.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    let eventCount = 0;
+    for (const event of responsesObjectToSyntheticSseEvents(adaptedResponse)) {
+      eventCount += 1;
+      this.emitTrace({
+        type: 'stream.event',
+        route: 'responses',
+        event,
+      });
+      response.write(formatResponsesSseEvent(event));
+    }
+    response.write('data: [DONE]\n\n');
+    this.emitTrace({
+      type: 'stream.completed',
+      route: 'responses',
+      eventCount,
+    });
+    response.end();
+  }
+
   private emitTrace(event: CodexGatewayTraceEvent): void {
     if (!this.traceSink) {
       return;
@@ -784,6 +1200,458 @@ export class OpenAICompatibleResponsesAdapterServer {
       // Ignore trace sink failures so protocol serving stays unaffected.
     }
   }
+}
+
+interface RelayHostedToolCall {
+  declaration: NormalizedCodexProviderRelayHostedToolDeclaration;
+  toolCall: JsonRecord;
+  message: JsonRecord;
+}
+
+type RelayHostedStreamingDecision =
+  | {
+    kind: 'final_stream';
+    bufferedChunks: string[];
+    remaining: AsyncIterable<string>;
+  }
+  | {
+    kind: 'tool_calls';
+    calls: RelayHostedToolCall[];
+  }
+  | {
+    kind: 'error';
+    message: string;
+  };
+
+interface StreamingToolCallAccumulator {
+  toolCallsByKey: Map<string, JsonRecord>;
+  sawToolCallDelta: boolean;
+}
+
+async function inspectRelayHostedStreamingTurn(
+  dataLines: AsyncIterable<string>,
+  hostedTools: NormalizedCodexProviderRelayHostedToolDeclaration[],
+  registry: CodexProviderRelayHostedToolExecutorRegistry,
+): Promise<RelayHostedStreamingDecision> {
+  const iterator = dataLines[Symbol.asyncIterator]();
+  const bufferedChunks: string[] = [];
+  const accumulator: StreamingToolCallAccumulator = {
+    toolCallsByKey: new Map(),
+    sawToolCallDelta: false,
+  };
+
+  try {
+    while (true) {
+      const next = await iterator.next();
+      if (next.done) {
+        return streamingDecisionFromBufferedChunks(bufferedChunks, accumulator, hostedTools, registry);
+      }
+      const data = next.value;
+      bufferedChunks.push(data);
+      const chunk = parseChatStreamData(data);
+      if (!chunk) {
+        continue;
+      }
+      collectStreamingToolCallDeltas(chunk, accumulator);
+      if (!accumulator.sawToolCallDelta && chatStreamChunkHasAssistantText(chunk)) {
+        return {
+          kind: 'final_stream',
+          bufferedChunks,
+          remaining: asyncIteratorToIterable(iterator),
+        };
+      }
+      if (accumulator.sawToolCallDelta && chatStreamChunkFinishedToolCalls(chunk)) {
+        await drainAsyncIterator(iterator);
+        return streamingDecisionFromBufferedChunks(bufferedChunks, accumulator, hostedTools, registry);
+      }
+    }
+  } catch (error) {
+    return {
+      kind: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function streamingDecisionFromBufferedChunks(
+  bufferedChunks: string[],
+  accumulator: StreamingToolCallAccumulator,
+  hostedTools: NormalizedCodexProviderRelayHostedToolDeclaration[],
+  registry: CodexProviderRelayHostedToolExecutorRegistry,
+): RelayHostedStreamingDecision {
+  const toolCalls = [...accumulator.toolCallsByKey.values()];
+  if (toolCalls.length === 0) {
+    return {
+      kind: 'final_stream',
+      bufferedChunks,
+      remaining: emptyAsyncIterable(),
+    };
+  }
+
+  const fakeMessage = {
+    content: '',
+    tool_calls: toolCalls,
+  };
+  const executableCalls = collectRelayHostedToolCalls(
+    {
+      choices: [{
+        message: fakeMessage,
+      }],
+    },
+    hostedTools,
+    registry,
+  );
+  if (executableCalls.length === 0) {
+    return {
+      kind: 'final_stream',
+      bufferedChunks,
+      remaining: emptyAsyncIterable(),
+    };
+  }
+  if (executableCalls.length !== toolCalls.length) {
+    return {
+      kind: 'error',
+      message: 'A streamed assistant turn mixed relay-emulated hosted tool calls with non-relay tool calls. This is not supported yet.',
+    };
+  }
+  return {
+    kind: 'tool_calls',
+    calls: executableCalls,
+  };
+}
+
+function collectRelayHostedToolCalls(
+  chatResponse: JsonRecord,
+  hostedTools: NormalizedCodexProviderRelayHostedToolDeclaration[],
+  registry: CodexProviderRelayHostedToolExecutorRegistry,
+): RelayHostedToolCall[] {
+  const calls: RelayHostedToolCall[] = [];
+  for (const choice of normalizeArray(chatResponse?.choices)) {
+    const message = choice?.message;
+    if (!message || typeof message !== 'object') {
+      continue;
+    }
+    for (const toolCall of normalizeArray(message.tool_calls)) {
+      const relayToolName = normalizeString(toolCall?.function?.name);
+      if (!relayToolName) {
+        continue;
+      }
+      const declaration = hostedTools.find((tool) => (
+        tool.mode === 'relay-emulated'
+        && normalizeString(tool.relayToolName || tool.name) === relayToolName
+      ));
+      if (!declaration || !registry.has(declaration.name)) {
+        continue;
+      }
+      calls.push({
+        declaration,
+        toolCall,
+        message,
+      });
+    }
+  }
+  return calls;
+}
+
+function groupRelayHostedToolCallsByMessage(
+  calls: RelayHostedToolCall[],
+): Array<{ message: JsonRecord; toolCalls: RelayHostedToolCall[] }> {
+  const grouped = new Map<JsonRecord, RelayHostedToolCall[]>();
+  for (const call of calls) {
+    const existing = grouped.get(call.message);
+    if (existing) {
+      existing.push(call);
+    } else {
+      grouped.set(call.message, [call]);
+    }
+  }
+  return [...grouped.entries()].map(([message, toolCalls]) => ({ message, toolCalls }));
+}
+
+function buildAssistantToolCallMessage(
+  message: JsonRecord,
+  toolCalls: JsonRecord[],
+): JsonRecord {
+  return omitUndefined({
+    role: 'assistant',
+    content: typeof message?.content === 'string' ? message.content : '',
+    tool_calls: toolCalls.map((toolCall) => cloneJson(toolCall)),
+  });
+}
+
+function parseChatStreamData(data: string): JsonRecord | null {
+  const trimmed = normalizeString(data);
+  if (!trimmed || trimmed === '[DONE]') {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as JsonRecord;
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function collectStreamingToolCallDeltas(
+  chunk: JsonRecord,
+  accumulator: StreamingToolCallAccumulator,
+): void {
+  for (const choice of normalizeArray(chunk?.choices)) {
+    const choiceIndex = normalizeStreamIndex(choice?.index, 0);
+    for (const toolCallDelta of normalizeArray(choice?.delta?.tool_calls)) {
+      accumulator.sawToolCallDelta = true;
+      const toolIndex = normalizeStreamIndex(toolCallDelta?.index, 0);
+      const key = `${choiceIndex}:${toolIndex}`;
+      const existing = accumulator.toolCallsByKey.get(key) ?? {
+        id: '',
+        type: 'function',
+        function: {
+          name: '',
+          arguments: '',
+        },
+      };
+      const id = normalizeString(toolCallDelta?.id);
+      if (id) {
+        existing.id = id;
+      }
+      const type = normalizeString(toolCallDelta?.type);
+      if (type) {
+        existing.type = type;
+      }
+      const functionName = normalizeString(toolCallDelta?.function?.name);
+      if (functionName) {
+        existing.function.name += functionName;
+      }
+      const functionArguments = typeof toolCallDelta?.function?.arguments === 'string'
+        ? toolCallDelta.function.arguments
+        : '';
+      if (functionArguments) {
+        existing.function.arguments += functionArguments;
+      }
+      accumulator.toolCallsByKey.set(key, existing);
+    }
+  }
+  for (const [key, toolCall] of accumulator.toolCallsByKey.entries()) {
+    if (!normalizeString(toolCall.id)) {
+      toolCall.id = `call_${key.replace(/[^A-Za-z0-9_-]/gu, '_')}`;
+    }
+  }
+}
+
+function chatStreamChunkHasAssistantText(chunk: JsonRecord): boolean {
+  for (const choice of normalizeArray(chunk?.choices)) {
+    const delta = choice?.delta;
+    if (typeof delta?.content === 'string' && delta.content.length > 0) {
+      return true;
+    }
+    if (typeof delta?.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
+      return true;
+    }
+    if (typeof delta?.reasoning === 'string' && delta.reasoning.length > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function chatStreamChunkFinishedToolCalls(chunk: JsonRecord): boolean {
+  return normalizeArray(chunk?.choices).some((choice) => normalizeString(choice?.finish_reason) === 'tool_calls');
+}
+
+function normalizeStreamIndex(value: unknown, fallback: number): number {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : fallback;
+}
+
+async function* chainSseDataLines(
+  bufferedChunks: string[],
+  remaining: AsyncIterable<string>,
+): AsyncGenerator<string> {
+  for (const chunk of bufferedChunks) {
+    yield chunk;
+  }
+  for await (const chunk of remaining) {
+    yield chunk;
+  }
+}
+
+function asyncIteratorToIterable<T>(iterator: AsyncIterator<T>): AsyncIterable<T> {
+  return {
+    [Symbol.asyncIterator]() {
+      return iterator;
+    },
+  };
+}
+
+async function drainAsyncIterator<T>(iterator: AsyncIterator<T>): Promise<void> {
+  while (true) {
+    const next = await iterator.next();
+    if (next.done) {
+      return;
+    }
+  }
+}
+
+async function* emptyAsyncIterable<T>(): AsyncGenerator<T> {}
+
+function requestUsesExecutableRelayHostedTool(
+  request: JsonRecord,
+  hostedTools: NormalizedCodexProviderRelayHostedToolDeclaration[],
+): boolean {
+  if (!hostedTools.some((tool) => tool.name === 'web_search' && tool.mode === 'relay-emulated')) {
+    return false;
+  }
+  if (normalizeArray(request?.tools).some((tool) => isBuiltinWebSearchToolType(tool?.type))) {
+    return true;
+  }
+  const toolChoice = request?.tool_choice;
+  if (typeof toolChoice === 'string') {
+    return isBuiltinWebSearchToolType(toolChoice);
+  }
+  if (toolChoice && typeof toolChoice === 'object') {
+    const record = toolChoice as JsonRecord;
+    if (isBuiltinWebSearchToolType(record.type)) {
+      return true;
+    }
+    if (normalizeString(record.type) === 'allowed_tools') {
+      return normalizeArray(record.tools).some((tool) => isBuiltinWebSearchToolType(tool?.type));
+    }
+  }
+  return false;
+}
+
+function parseToolCallArguments(rawArguments: string): JsonRecord {
+  const normalized = normalizeString(rawArguments);
+  if (!normalized) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(normalized);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed
+      : { value: parsed };
+  } catch {
+    return { input: normalized };
+  }
+}
+
+function responsesObjectToSyntheticSseEvents(response: JsonRecord): JsonRecord[] {
+  const events: JsonRecord[] = [];
+  const responseId = normalizeString(response?.id) || `resp_${Date.now()}`;
+  let sequence = 0;
+  const withSequence = (event: JsonRecord): JsonRecord => ({
+    ...event,
+    sequence_number: sequence += 1,
+  });
+  events.push(withSequence({
+    type: 'response.created',
+    response: {
+      ...response,
+      output: [],
+    },
+  }));
+  const output = normalizeArray(response?.output);
+  for (let outputIndex = 0; outputIndex < output.length; outputIndex += 1) {
+    const item = output[outputIndex];
+    const itemId = normalizeString(item?.id) || `${responseId}_item_${outputIndex}`;
+    events.push(withSequence({
+      type: 'response.output_item.added',
+      output_index: outputIndex,
+      item,
+    }));
+    if (item?.type === 'message') {
+      appendSyntheticMessageContentEvents(events, withSequence, item, itemId, outputIndex);
+    } else if (item?.type === 'function_call') {
+      const argumentsText = normalizeString(item.arguments) || '{}';
+      events.push(withSequence({
+        type: 'response.function_call_arguments.delta',
+        item_id: itemId,
+        output_index: outputIndex,
+        delta: argumentsText,
+      }));
+      events.push(withSequence({
+        type: 'response.function_call_arguments.done',
+        item_id: itemId,
+        output_index: outputIndex,
+        arguments: argumentsText,
+      }));
+    } else if (item?.type === 'custom_tool_call') {
+      const input = normalizeString(item.input);
+      if (input) {
+        events.push(withSequence({
+          type: 'response.custom_tool_call_input.delta',
+          item_id: itemId,
+          output_index: outputIndex,
+          delta: input,
+        }));
+      }
+      events.push(withSequence({
+        type: 'response.custom_tool_call_input.done',
+        item_id: itemId,
+        output_index: outputIndex,
+        input,
+      }));
+    }
+    events.push(withSequence({
+      type: 'response.output_item.done',
+      output_index: outputIndex,
+      item,
+    }));
+  }
+  const completedType = response?.status === 'failed' ? 'response.failed' : 'response.completed';
+  events.push(withSequence({
+    type: completedType,
+    response,
+  }));
+  return events;
+}
+
+function appendSyntheticMessageContentEvents(
+  events: JsonRecord[],
+  withSequence: (event: JsonRecord) => JsonRecord,
+  item: JsonRecord,
+  itemId: string,
+  outputIndex: number,
+): void {
+  const content = normalizeArray(item.content);
+  for (let contentIndex = 0; contentIndex < content.length; contentIndex += 1) {
+    const part = content[contentIndex];
+    events.push(withSequence({
+      type: 'response.content_part.added',
+      item_id: itemId,
+      output_index: outputIndex,
+      content_index: contentIndex,
+      part,
+    }));
+    const text = normalizeString(part?.text);
+    if (text && normalizeString(part?.type) === 'output_text') {
+      events.push(withSequence({
+        type: 'response.output_text.delta',
+        item_id: itemId,
+        output_index: outputIndex,
+        content_index: contentIndex,
+        delta: text,
+      }));
+      events.push(withSequence({
+        type: 'response.output_text.done',
+        item_id: itemId,
+        output_index: outputIndex,
+        content_index: contentIndex,
+        text,
+      }));
+    }
+    events.push(withSequence({
+      type: 'response.content_part.done',
+      item_id: itemId,
+      output_index: outputIndex,
+      content_index: contentIndex,
+      part,
+    }));
+  }
+}
+
+function formatResponsesSseEvent(event: JsonRecord): string {
+  return `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<JsonRecord> {
@@ -1211,10 +2079,12 @@ function summarizeRequestAdjustments({
   request,
   upstreamRequest,
   providerCapabilities,
+  hostedTools = [],
 }: {
   request: JsonRecord;
   upstreamRequest: JsonRecord;
   providerCapabilities: OpenAICompatibleProviderCapabilities | null;
+  hostedTools?: NormalizedCodexProviderRelayHostedToolDeclaration[];
 }): CodexGatewayRequestAdjustment[] {
   const adjustments: CodexGatewayRequestAdjustment[] = [];
   const requestedModel = normalizeString(request?.model);
@@ -1270,6 +2140,9 @@ function summarizeRequestAdjustments({
     const upstreamTools = normalizeArray(upstreamRequest?.tools);
     const forwardedFunctionTools = upstreamTools.filter((tool) => normalizeString(tool?.type) === 'function').length;
     const forwardedBuiltinTools = upstreamTools.filter((tool) => isBuiltinWebSearchToolType(tool?.type)).length;
+    const forwardedRelayHostedBuiltinTools = upstreamTools
+      .filter((tool) => isRelayHostedBuiltinChatTool(tool, hostedTools))
+      .length;
 
     if (requestedFunctionTools > forwardedFunctionTools) {
       adjustments.push({
@@ -1282,7 +2155,7 @@ function summarizeRequestAdjustments({
         forwardedCount: forwardedFunctionTools,
       });
     }
-    if (requestedBuiltinTools > forwardedBuiltinTools) {
+    if (requestedBuiltinTools > forwardedBuiltinTools + forwardedRelayHostedBuiltinTools) {
       adjustments.push({
         kind: 'tools_dropped',
         path: 'tools',
@@ -1290,7 +2163,7 @@ function summarizeRequestAdjustments({
           ? 'builtin_web_search_unsupported'
           : 'unsupported_or_invalid_tools',
         requestedCount: requestedBuiltinTools,
-        forwardedCount: forwardedBuiltinTools,
+        forwardedCount: forwardedBuiltinTools + forwardedRelayHostedBuiltinTools,
       });
     }
   }
@@ -1817,6 +2690,11 @@ function normalizePositiveNumber(value: unknown): number | null {
   return Number.isFinite(number) && number > 0 ? number : null;
 }
 
+function normalizePositiveInteger(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
 function normalizeNullableBoolean(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null;
 }
@@ -1832,6 +2710,25 @@ function isBuiltinWebSearchToolType(type: unknown): boolean {
     || normalized === 'web_search_preview_2025_03_11';
 }
 
+function isRelayHostedBuiltinChatTool(
+  tool: unknown,
+  hostedTools: NormalizedCodexProviderRelayHostedToolDeclaration[],
+): boolean {
+  if (!tool || typeof tool !== 'object') {
+    return false;
+  }
+  const record = tool as JsonRecord;
+  if (normalizeString(record.type) !== 'function') {
+    return false;
+  }
+  const functionName = normalizeString(record.function?.name);
+  return Boolean(functionName && hostedTools.some((hostedTool) => (
+    hostedTool.name === 'web_search'
+    && hostedTool.mode === 'relay-emulated'
+    && normalizeString(hostedTool.relayToolName || hostedTool.name) === functionName
+  )));
+}
+
 function normalizePath(value: unknown): string {
   const normalized = normalizeString(value);
   if (!normalized) {
@@ -1844,6 +2741,10 @@ function omitUndefined<T extends JsonRecord>(value: T): T {
   return Object.fromEntries(
     Object.entries(value).filter(([, entry]) => entry !== undefined),
   ) as T;
+}
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 export async function reserveLocalPort(): Promise<number> {

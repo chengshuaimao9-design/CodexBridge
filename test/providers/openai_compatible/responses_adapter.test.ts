@@ -750,11 +750,51 @@ test('chatCompletionsResponseToResponses maps Gemini-family usageMetadata into R
     },
   });
 
-  assert.equal(response.usage.input_tokens, 10);
+  assert.equal(response.usage.input_tokens, 6);
   assert.equal(response.usage.output_tokens, 20);
   assert.equal(response.usage.total_tokens, 33);
   assert.equal(response.usage.input_tokens_details.cached_tokens, 4);
   assert.equal(response.usage.output_tokens_details.reasoning_tokens, 3);
+});
+
+test('chatCompletionsResponseToResponses maps Codex++ Gemini and Claude cache usage semantics', () => {
+  const gemini = chatCompletionsResponseToResponses({
+    id: 'chatcmpl_gemini_usage',
+    created: 123,
+    model: 'gemini-proxy',
+    choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }],
+    usage: {
+      promptTokenCount: 20,
+      cachedContentTokenCount: 5,
+      candidatesTokenCount: 7,
+    },
+  });
+  assert.equal(gemini.usage.input_tokens, 15);
+  assert.equal(gemini.usage.output_tokens, 7);
+  assert.equal(gemini.usage.total_tokens, 27);
+  assert.equal(gemini.usage.input_tokens_details.cached_tokens, 5);
+
+  const claude = chatCompletionsResponseToResponses({
+    id: 'chatcmpl_claude_usage',
+    created: 123,
+    model: 'claude-proxy',
+    choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }],
+    usage: {
+      input_tokens: 10,
+      output_tokens: 3,
+      cache_read_input_tokens: 2,
+      cache_creation_5m_input_tokens: 4,
+      cache_creation_1h_input_tokens: 6,
+    },
+  });
+  assert.equal(claude.usage.input_tokens, 10);
+  assert.equal(claude.usage.output_tokens, 3);
+  assert.equal(claude.usage.total_tokens, 25);
+  assert.equal(claude.usage.cache_read_input_tokens, 2);
+  assert.equal(claude.usage.cache_creation_5m_input_tokens, 4);
+  assert.equal(claude.usage.cache_creation_1h_input_tokens, 6);
+  assert.equal(claude.usage.cache_ttl, 'mixed');
+  assert.equal(claude.usage.input_tokens_details, undefined);
 });
 
 test('translateChatCompletionsSseToResponsesEvents maps stream usageMetadata into completed usage', () => {

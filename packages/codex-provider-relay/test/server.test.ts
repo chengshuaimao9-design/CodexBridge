@@ -912,6 +912,353 @@ test('adapter server completes a custom tool-call loop over Chat Completions', a
   }
 });
 
+test('adapter server executes relay-emulated web_search inside the Chat Completions loop', async () => {
+  const upstreamRequests: any[] = [];
+  const executedRequests: any[] = [];
+  const traceEvents: any[] = [];
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'web_search',
+      mode: 'relay-emulated',
+      relayToolName: 'relay_web_search',
+    }],
+    hostedToolExecutors: {
+      web_search: async (request) => {
+        executedRequests.push(JSON.parse(JSON.stringify(request)));
+        return {
+          content: {
+            results: [{
+              title: 'Codex Relay Result',
+              url: 'https://example.com/codex-relay',
+              snippet: 'Relay executed web search locally.',
+            }],
+          },
+        };
+      },
+    },
+    traceSink: (event) => {
+      traceEvents.push(JSON.parse(JSON.stringify(event)));
+    },
+    fetchImpl: (async (_url, init) => {
+      const requestBody = JSON.parse(String(init?.body ?? '{}'));
+      upstreamRequests.push(requestBody);
+      if (upstreamRequests.length === 1) {
+        assert.equal(requestBody.tools[0].function.name, 'relay_web_search');
+        assert.deepEqual(requestBody.tool_choice, {
+          type: 'function',
+          function: {
+            name: 'relay_web_search',
+          },
+        });
+        return new Response(JSON.stringify({
+          id: 'chatcmpl_relay_search_1',
+          created: 1_700_000_451,
+          model: 'relay-search-model',
+          choices: [{
+            message: {
+              tool_calls: [{
+                id: 'call_search_1',
+                type: 'function',
+                function: {
+                  name: 'relay_web_search',
+                  arguments: '{"query":"codex relay web search"}',
+                },
+              }],
+            },
+            finish_reason: 'tool_calls',
+          }],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      assert.equal(requestBody.messages.at(-2).role, 'assistant');
+      assert.equal(requestBody.messages.at(-2).tool_calls[0].function.name, 'relay_web_search');
+      assert.equal(requestBody.messages.at(-1).role, 'tool');
+      assert.equal(requestBody.messages.at(-1).tool_call_id, 'call_search_1');
+      assert.match(requestBody.messages.at(-1).content, /Codex Relay Result/u);
+      return new Response(JSON.stringify({
+        id: 'chatcmpl_relay_search_2',
+        created: 1_700_000_452,
+        model: 'relay-search-model',
+        choices: [{
+          message: {
+            content: 'I searched through the relay.',
+          },
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'relay-search-model',
+        input: 'Find current relay info.',
+        tools: [{
+          type: 'web_search_preview',
+        }],
+        tool_choice: 'web_search_preview',
+      }),
+    });
+    const body = await response.json() as any;
+    assert.equal(response.status, 200);
+    assert.equal(upstreamRequests.length, 2);
+    assert.equal(executedRequests.length, 1);
+    assert.equal(executedRequests[0].toolName, 'web_search');
+    assert.equal(executedRequests[0].relayToolName, 'relay_web_search');
+    assert.equal(executedRequests[0].arguments.query, 'codex relay web search');
+    assert.equal(body.output[0].content[0].text, 'I searched through the relay.');
+    assert.equal(traceEvents.some((event) => event.type === 'hosted_tool.executed'), true);
+    assert.equal(traceEvents.some((event) => (
+      event.type === 'request.adjusted'
+      && event.adjustments?.some((adjustment: any) => adjustment.reason === 'builtin_web_search_unsupported')
+    )), false);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('adapter server streams final answer after relay-emulated web_search execution', async () => {
+  const upstreamRequests: any[] = [];
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'web_search',
+      mode: 'relay-emulated',
+      relayToolName: 'relay_web_search',
+    }],
+    hostedToolExecutors: {
+      web_search: async () => ({
+        content: {
+          results: [{
+            title: 'Streaming Relay Result',
+            url: 'https://example.com/streaming-relay',
+          }],
+        },
+      }),
+    },
+    fetchImpl: (async (_url, init) => {
+      const requestBody = JSON.parse(String(init?.body ?? '{}'));
+      upstreamRequests.push(requestBody);
+      assert.equal(requestBody.stream, true);
+      if (upstreamRequests.length === 1) {
+        return createEventStreamResponse([
+          {
+            id: 'chatcmpl_stream_relay_search_1',
+            created: 1_700_000_461,
+            model: 'relay-search-model',
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: 'call_search_stream_1',
+                  type: 'function',
+                  function: {
+                    name: 'relay_web_search',
+                    arguments: '{"query"',
+                  },
+                }],
+              },
+            }],
+          },
+          {
+            id: 'chatcmpl_stream_relay_search_1',
+            created: 1_700_000_461,
+            model: 'relay-search-model',
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  function: {
+                    arguments: ':"stream relay search"}',
+                  },
+                }],
+              },
+            }],
+          },
+          {
+            id: 'chatcmpl_stream_relay_search_1',
+            created: 1_700_000_461,
+            model: 'relay-search-model',
+            choices: [{
+              index: 0,
+              finish_reason: 'tool_calls',
+            }],
+          },
+        ]);
+      }
+      assert.equal(requestBody.messages.at(-2).role, 'assistant');
+      assert.equal(requestBody.messages.at(-2).tool_calls[0].id, 'call_search_stream_1');
+      assert.equal(requestBody.messages.at(-2).tool_calls[0].function.name, 'relay_web_search');
+      assert.equal(requestBody.messages.at(-1).role, 'tool');
+      assert.match(requestBody.messages.at(-1).content, /Streaming Relay Result/u);
+      return createEventStreamResponse([
+        {
+          id: 'chatcmpl_stream_relay_search_2',
+          created: 1_700_000_462,
+          model: 'relay-search-model',
+          choices: [{
+            index: 0,
+            delta: {
+              content: 'stream-compatible ',
+            },
+          }],
+        },
+        {
+          id: 'chatcmpl_stream_relay_search_2',
+          created: 1_700_000_462,
+          model: 'relay-search-model',
+          choices: [{
+            index: 0,
+            delta: {
+              content: 'final answer',
+            },
+          }],
+        },
+        {
+          id: 'chatcmpl_stream_relay_search_2',
+          created: 1_700_000_462,
+          model: 'relay-search-model',
+          choices: [{
+            index: 0,
+            finish_reason: 'stop',
+          }],
+        },
+      ]);
+    }) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'relay-search-model',
+        input: 'Find current relay info.',
+        stream: true,
+        tools: [{
+          type: 'web_search_preview',
+        }],
+      }),
+    });
+    const text = await response.text();
+    const events = parseSseText(text);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type')?.includes('text/event-stream'), true);
+    assert.equal(upstreamRequests.length, 2);
+    assert.equal(events.filter((event) => event.event === 'response.output_text.delta').length, 2);
+    assert.equal(events.at(-1)?.event, 'response.completed');
+    assert.equal(events.at(-1)?.data.response.output[0].content[0].text, 'stream-compatible final answer');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('adapter server rejects streamed turns that mix relay and non-relay tool calls', async () => {
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'web_search',
+      mode: 'relay-emulated',
+      relayToolName: 'relay_web_search',
+    }],
+    hostedToolExecutors: {
+      web_search: async () => ({
+        content: {
+          results: [],
+        },
+      }),
+    },
+    fetchImpl: (async () => createEventStreamResponse([
+      {
+        id: 'chatcmpl_mixed_tool_stream_1',
+        created: 1_700_000_463,
+        model: 'relay-search-model',
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [
+              {
+                id: 'call_search_stream_1',
+                index: 0,
+                type: 'function',
+                function: {
+                  name: 'relay_web_search',
+                  arguments: '{"query":"stream relay search"}',
+                },
+              },
+              {
+                id: 'call_regular_1',
+                index: 1,
+                type: 'function',
+                function: {
+                  name: 'regular_tool',
+                  arguments: '{}',
+                },
+              },
+            ],
+          },
+        }],
+      },
+      {
+        id: 'chatcmpl_mixed_tool_stream_1',
+        created: 1_700_000_463,
+        model: 'relay-search-model',
+        choices: [{
+          index: 0,
+          finish_reason: 'tool_calls',
+        }],
+      },
+    ])) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'relay-search-model',
+        input: 'Find current relay info.',
+        stream: true,
+        tools: [{
+          type: 'web_search_preview',
+        }, {
+          type: 'function',
+          name: 'regular_tool',
+          parameters: {},
+        }],
+      }),
+    });
+    const body = await response.json() as any;
+    assert.equal(response.status, 502);
+    assert.equal(body.error.code, 'relay_hosted_streaming_tool_mix_unsupported');
+  } finally {
+    await server.stop();
+  }
+});
+
 test('adapter server retries forced tool_choice as auto when upstream thinking mode rejects it', async () => {
   const upstreamRequests: any[] = [];
   const traceEvents: any[] = [];

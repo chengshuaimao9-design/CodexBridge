@@ -1,1 +1,1 @@
-export * from '../../../packages/codex-gateway/src/capabilities/thinking_policy.js';
+export * from '../../../packages/codex-provider-relay/src/capabilities/thinking_policy.js';

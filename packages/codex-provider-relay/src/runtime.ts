@@ -57,6 +57,7 @@ export interface CodexProviderRelayRuntimeOptions {
   hostedTools?: CodexProviderRelayHostedToolDeclaration[] | null;
   hostedToolExecutors?: CodexProviderRelayHostedToolExecutorRegistryInput;
   maxHostedToolIterations?: number | null;
+  emitHostedToolSseEvents?: boolean | null;
   extraProviderFields?: Record<string, CodexProviderRelayTomlPrimitive | null | undefined> | null;
   adapterHost?: string | null;
   adapterPort?: number | null;
@@ -139,6 +140,7 @@ export class CodexProviderRelayRuntime {
       ...(this.options.hostedTools !== undefined ? { hostedTools: this.options.hostedTools ?? null } : {}),
       ...(this.options.hostedToolExecutors !== undefined ? { hostedToolExecutors: this.options.hostedToolExecutors ?? null } : {}),
       ...(this.options.maxHostedToolIterations !== undefined ? { maxHostedToolIterations: this.options.maxHostedToolIterations ?? null } : {}),
+      ...(this.options.emitHostedToolSseEvents !== undefined ? { emitHostedToolSseEvents: this.options.emitHostedToolSseEvents ?? null } : {}),
     });
     await server.start();
 

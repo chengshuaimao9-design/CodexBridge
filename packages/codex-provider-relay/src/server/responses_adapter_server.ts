@@ -166,6 +166,7 @@ export interface OpenAICompatibleResponsesAdapterServerOptions {
   hostedTools?: CodexProviderRelayHostedToolDeclaration[] | null;
   hostedToolExecutors?: CodexProviderRelayHostedToolExecutorRegistryInput;
   maxHostedToolIterations?: number | null;
+  emitHostedToolSseEvents?: boolean | null;
 }
 
 const DEFAULT_UPSTREAM_BASE_URL = 'https://api.openai.com/v1';
@@ -210,6 +211,8 @@ export class OpenAICompatibleResponsesAdapterServer {
 
   private readonly maxHostedToolIterations: number;
 
+  private readonly emitHostedToolSseEvents: boolean;
+
   private server: http.Server | null;
 
   private startedUrl: string | null;
@@ -232,6 +235,7 @@ export class OpenAICompatibleResponsesAdapterServer {
     hostedTools = null,
     hostedToolExecutors = null,
     maxHostedToolIterations = null,
+    emitHostedToolSseEvents = false,
   }: OpenAICompatibleResponsesAdapterServerOptions) {
     const normalizedKey = normalizeString(apiKey);
     if (!normalizedKey) {
@@ -258,6 +262,7 @@ export class OpenAICompatibleResponsesAdapterServer {
       || this.hostedToolExecutorRegistry.has(tool.name)
     ));
     this.maxHostedToolIterations = normalizePositiveInteger(maxHostedToolIterations) ?? 4;
+    this.emitHostedToolSseEvents = Boolean(emitHostedToolSseEvents);
     this.models = normalizeModels(
       models,
       this.defaultModel,
@@ -880,6 +885,19 @@ export class OpenAICompatibleResponsesAdapterServer {
           entry,
           iteration,
           requestedModel,
+          {
+            emitSseEvent: this.emitHostedToolSseEvents
+              ? (event) => {
+                ensureSseResponseHeaders(response);
+                response.write(formatResponsesSseEvent(event));
+                this.emitTrace({
+                  type: 'stream.event',
+                  route: 'responses',
+                  event,
+                });
+              }
+              : null,
+          },
         );
         loopChatBody.messages.push({
           role: 'tool',
@@ -902,6 +920,9 @@ export class OpenAICompatibleResponsesAdapterServer {
     entry: RelayHostedToolCall,
     iteration: number,
     requestedModel: string,
+    observation: {
+      emitSseEvent?: ((event: JsonRecord) => void) | null;
+    } = {},
   ): Promise<{
     callId: string;
     content: string;
@@ -912,18 +933,57 @@ export class OpenAICompatibleResponsesAdapterServer {
       || entry.declaration.name;
     const rawArguments = normalizeString(entry.toolCall?.function?.arguments) || '{}';
     let content: string;
+    const startedAt = Date.now();
+    const emitSseEvent = typeof observation.emitSseEvent === 'function'
+      ? observation.emitSseEvent
+      : null;
+    emitSseEvent?.(buildHostedToolSseEvent({
+      type: 'hosted_tool.started',
+      entry,
+      relayToolName,
+      callId,
+      iteration,
+      startedAt,
+      argumentsObject: parseToolCallArguments(rawArguments),
+    }));
     try {
+      const argumentsObject = parseToolCallArguments(rawArguments);
       const result = await this.hostedToolExecutorRegistry.execute({
         toolName: entry.declaration.name,
         relayToolName,
         callId,
-        arguments: parseToolCallArguments(rawArguments),
+        arguments: argumentsObject,
         rawArguments,
         model: requestedModel || null,
         providerKind: this.providerKind,
         providerName: this.providerName,
+        emitDelta: emitSseEvent
+          ? async (delta, metadata = null) => {
+            emitSseEvent(buildHostedToolSseEvent({
+              type: 'hosted_tool.delta',
+              entry,
+              relayToolName,
+              callId,
+              iteration,
+              startedAt,
+              delta,
+              metadata,
+            }));
+          }
+          : null,
       });
       content = formatCodexProviderRelayHostedToolExecutionResult(result);
+      emitSseEvent?.(buildHostedToolSseEvent({
+        type: 'hosted_tool.completed',
+        entry,
+        relayToolName,
+        callId,
+        iteration,
+        startedAt,
+        durationMs: Date.now() - startedAt,
+        metadata: result.metadata ?? null,
+        outputPreview: hostedToolOutputPreview(content),
+      }));
     } catch (error) {
       content = JSON.stringify({
         error: {
@@ -931,6 +991,19 @@ export class OpenAICompatibleResponsesAdapterServer {
           type: 'hosted_tool_execution_error',
         },
       });
+      emitSseEvent?.(buildHostedToolSseEvent({
+        type: 'hosted_tool.failed',
+        entry,
+        relayToolName,
+        callId,
+        iteration,
+        startedAt,
+        durationMs: Date.now() - startedAt,
+        error: {
+          message: error instanceof Error ? error.message : String(error),
+          type: 'hosted_tool_execution_error',
+        },
+      }));
     }
 
     this.emitTrace({
@@ -1127,11 +1200,7 @@ export class OpenAICompatibleResponsesAdapterServer {
     dataLines: AsyncIterable<string>,
     response: ServerResponse,
   ): Promise<void> {
-    response.writeHead(200, {
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    });
+    ensureSseResponseHeaders(response);
     let eventCount = 0;
     for await (const event of translateChatCompletionsSseStreamToResponsesSse(
       dataLines,
@@ -1498,26 +1567,34 @@ function requestUsesExecutableRelayHostedTool(
   request: JsonRecord,
   hostedTools: NormalizedCodexProviderRelayHostedToolDeclaration[],
 ): boolean {
-  if (!hostedTools.some((tool) => tool.name === 'web_search' && tool.mode === 'relay-emulated')) {
+  if (!hostedTools.some((tool) => isRelayHostedToolType(tool.name) && tool.mode === 'relay-emulated')) {
     return false;
   }
-  if (normalizeArray(request?.tools).some((tool) => isBuiltinWebSearchToolType(tool?.type))) {
+  if (normalizeArray(request?.tools).some((tool) => isExecutableRelayHostedRequestTool(tool, hostedTools))) {
     return true;
   }
   const toolChoice = request?.tool_choice;
   if (typeof toolChoice === 'string') {
-    return isBuiltinWebSearchToolType(toolChoice);
+    return hostedTools.some((tool) => normalizeRelayHostedToolType(toolChoice) === tool.name);
   }
   if (toolChoice && typeof toolChoice === 'object') {
     const record = toolChoice as JsonRecord;
-    if (isBuiltinWebSearchToolType(record.type)) {
+    if (hostedTools.some((tool) => normalizeRelayHostedToolType(record.type) === tool.name)) {
       return true;
     }
     if (normalizeString(record.type) === 'allowed_tools') {
-      return normalizeArray(record.tools).some((tool) => isBuiltinWebSearchToolType(tool?.type));
+      return normalizeArray(record.tools).some((tool) => isExecutableRelayHostedRequestTool(tool, hostedTools));
     }
   }
   return false;
+}
+
+function isExecutableRelayHostedRequestTool(
+  tool: unknown,
+  hostedTools: NormalizedCodexProviderRelayHostedToolDeclaration[],
+): boolean {
+  const normalizedType = normalizeRelayHostedToolType((tool as JsonRecord | null | undefined)?.type);
+  return Boolean(normalizedType && hostedTools.some((hostedTool) => hostedTool.name === normalizedType));
 }
 
 function parseToolCallArguments(rawArguments: string): JsonRecord {
@@ -1652,6 +1729,70 @@ function appendSyntheticMessageContentEvents(
 
 function formatResponsesSseEvent(event: JsonRecord): string {
   return `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+}
+
+function ensureSseResponseHeaders(response: ServerResponse): void {
+  if (response.headersSent) {
+    return;
+  }
+  response.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+}
+
+function buildHostedToolSseEvent({
+  type,
+  entry,
+  relayToolName,
+  callId,
+  iteration,
+  startedAt,
+  argumentsObject,
+  delta,
+  durationMs,
+  metadata,
+  outputPreview,
+  error,
+}: {
+  type: 'hosted_tool.started' | 'hosted_tool.delta' | 'hosted_tool.completed' | 'hosted_tool.failed';
+  entry: RelayHostedToolCall;
+  relayToolName: string;
+  callId: string;
+  iteration: number;
+  startedAt: number;
+  argumentsObject?: JsonRecord | null;
+  delta?: unknown;
+  durationMs?: number | null;
+  metadata?: JsonRecord | null;
+  outputPreview?: string | null;
+  error?: JsonRecord | null;
+}): JsonRecord {
+  return omitUndefined({
+    type,
+    hosted_tool: omitUndefined({
+      name: entry.declaration.name,
+      relay_tool_name: relayToolName,
+      call_id: callId,
+      iteration,
+      started_at: new Date(startedAt).toISOString(),
+      duration_ms: durationMs ?? undefined,
+      arguments: argumentsObject ?? undefined,
+      delta: delta ?? undefined,
+      metadata: metadata ?? undefined,
+      output_preview: outputPreview ?? undefined,
+      error: error ?? undefined,
+    }),
+  });
+}
+
+function hostedToolOutputPreview(content: string): string {
+  const normalized = normalizeString(content);
+  if (normalized.length <= 500) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 500)}...`;
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<JsonRecord> {
@@ -2710,6 +2851,25 @@ function isBuiltinWebSearchToolType(type: unknown): boolean {
     || normalized === 'web_search_preview_2025_03_11';
 }
 
+function isRelayHostedToolType(type: unknown): boolean {
+  const normalized = normalizeRelayHostedToolType(type);
+  return normalized === 'web_search' || normalized === 'file_search';
+}
+
+function normalizeRelayHostedToolType(type: unknown): string {
+  const normalized = normalizeString(type);
+  switch (normalized) {
+    case 'web_search':
+    case 'web_search_preview':
+    case 'web_search_preview_2025_03_11':
+      return 'web_search';
+    case 'file_search':
+      return 'file_search';
+    default:
+      return normalized;
+  }
+}
+
 function isRelayHostedBuiltinChatTool(
   tool: unknown,
   hostedTools: NormalizedCodexProviderRelayHostedToolDeclaration[],
@@ -2723,7 +2883,7 @@ function isRelayHostedBuiltinChatTool(
   }
   const functionName = normalizeString(record.function?.name);
   return Boolean(functionName && hostedTools.some((hostedTool) => (
-    hostedTool.name === 'web_search'
+    isRelayHostedToolType(hostedTool.name)
     && hostedTool.mode === 'relay-emulated'
     && normalizeString(hostedTool.relayToolName || hostedTool.name) === functionName
   )));

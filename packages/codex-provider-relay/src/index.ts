@@ -1,4 +1,5 @@
 export * from './codex_config.js';
+export * from './file_search_executor.js';
 export * from './hosted_tool_executors.js';
 export * from './hosted_tools.js';
 export * from './profiles.js';

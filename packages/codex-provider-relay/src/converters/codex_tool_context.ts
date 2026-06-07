@@ -77,6 +77,7 @@ export function buildCodexToolContext(tools: unknown): CodexToolContext {
       case 'web_search':
       case 'web_search_preview':
       case 'web_search_preview_2025_03_11':
+      case 'file_search':
       case 'local_shell':
       case 'computer_use':
         addBuiltInToolToContext(context, record, type);
@@ -149,6 +150,7 @@ export function responsesToolsToChatTools(
       case 'web_search':
       case 'web_search_preview':
       case 'web_search_preview_2025_03_11':
+      case 'file_search':
       case 'local_shell':
       case 'computer_use': {
         if (isHostedWebSearchToolType(type) && options.builtinToolConverter) {
@@ -259,7 +261,7 @@ function detectCodexCustomToolKind(tool: JsonRecord, name: string): CodexCustomT
     return 'apply_patch';
   }
   const type = stringValue(tool.type);
-  if (isHostedWebSearchToolType(type) || ['local_shell', 'computer_use'].includes(type)) {
+  if (isHostedWebSearchToolType(type) || type === 'file_search' || ['local_shell', 'computer_use'].includes(type)) {
     return 'built_in';
   }
   return 'raw';
@@ -268,7 +270,8 @@ function detectCodexCustomToolKind(tool: JsonRecord, name: string): CodexCustomT
 function isHostedWebSearchToolType(type: string): boolean {
   return type === 'web_search'
     || type === 'web_search_preview'
-    || type === 'web_search_preview_2025_03_11';
+    || type === 'web_search_preview_2025_03_11'
+    || type === 'file_search';
 }
 
 function responsesFunctionToolToChatTool(

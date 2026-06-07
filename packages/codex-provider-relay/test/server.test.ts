@@ -1172,6 +1172,357 @@ test('adapter server streams final answer after relay-emulated web_search execut
   }
 });
 
+test('adapter server streams final answer after relay-emulated file_search execution', async () => {
+  const upstreamRequests: any[] = [];
+  const executedRequests: any[] = [];
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'file_search',
+      mode: 'relay-emulated',
+      relayToolName: 'relay_file_search',
+    }],
+    hostedToolExecutors: {
+      file_search: async (request) => {
+        executedRequests.push(JSON.parse(JSON.stringify(request)));
+        return {
+          content: {
+            query: request.arguments.query,
+            provider: 'local-fs',
+            results: [{
+              title: 'src/agent.ts',
+              uri: 'file:///repo/src/agent.ts',
+              path: 'src/agent.ts',
+              score: 12,
+              snippets: [{
+                line: 2,
+                text: 'file search target',
+              }],
+            }],
+          },
+        };
+      },
+    },
+    fetchImpl: (async (_url, init) => {
+      const requestBody = JSON.parse(String(init?.body ?? '{}'));
+      upstreamRequests.push(requestBody);
+      assert.equal(requestBody.stream, true);
+      if (upstreamRequests.length === 1) {
+        assert.equal(requestBody.tools[0].function.name, 'relay_file_search');
+        return createEventStreamResponse([
+          {
+            id: 'chatcmpl_stream_file_search_1',
+            created: 1_700_000_467,
+            model: 'relay-search-model',
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: 'call_file_search_1',
+                  type: 'function',
+                  function: {
+                    name: 'relay_file_search',
+                    arguments: '{"query":"file search target","path_glob":"src/*"}',
+                  },
+                }],
+              },
+            }],
+          },
+          {
+            id: 'chatcmpl_stream_file_search_1',
+            created: 1_700_000_467,
+            model: 'relay-search-model',
+            choices: [{
+              index: 0,
+              finish_reason: 'tool_calls',
+            }],
+          },
+        ]);
+      }
+      assert.equal(requestBody.messages.at(-2).tool_calls[0].function.name, 'relay_file_search');
+      assert.equal(requestBody.messages.at(-1).role, 'tool');
+      assert.match(requestBody.messages.at(-1).content, /src\/agent\.ts/u);
+      return createEventStreamResponse([
+        {
+          id: 'chatcmpl_stream_file_search_2',
+          created: 1_700_000_468,
+          model: 'relay-search-model',
+          choices: [{
+            index: 0,
+            delta: {
+              content: 'file search final answer',
+            },
+          }],
+        },
+        {
+          id: 'chatcmpl_stream_file_search_2',
+          created: 1_700_000_468,
+          model: 'relay-search-model',
+          choices: [{
+            index: 0,
+            finish_reason: 'stop',
+          }],
+        },
+      ]);
+    }) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'relay-search-model',
+        input: 'Search configured files.',
+        stream: true,
+        tools: [{
+          type: 'file_search',
+        }],
+      }),
+    });
+    const events = parseSseText(await response.text());
+    assert.equal(response.status, 200);
+    assert.equal(upstreamRequests.length, 2);
+    assert.equal(executedRequests[0].toolName, 'file_search');
+    assert.equal(executedRequests[0].arguments.path_glob, 'src/*');
+    assert.equal(events.at(-1)?.data.response.output[0].content[0].text, 'file search final answer');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('adapter server emits opt-in hosted tool SSE lifecycle events', async () => {
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'web_search',
+      mode: 'relay-emulated',
+      relayToolName: 'relay_web_search',
+    }],
+    hostedToolExecutors: {
+      web_search: async (request) => {
+        await request.emitDelta?.('querying search provider', { phase: 'query' });
+        return {
+          content: {
+            results: [{
+              title: 'Observable Relay Result',
+              url: 'https://example.com/observable-relay',
+            }],
+          },
+          metadata: {
+            provider: 'test-search',
+          },
+        };
+      },
+    },
+    emitHostedToolSseEvents: true,
+    fetchImpl: (async (_url, init) => {
+      const requestBody = JSON.parse(String(init?.body ?? '{}'));
+      if (requestBody.messages.some((message: any) => message.role === 'tool')) {
+        return createEventStreamResponse([
+          {
+            id: 'chatcmpl_observable_search_2',
+            created: 1_700_000_464,
+            model: 'relay-search-model',
+            choices: [{
+              index: 0,
+              delta: {
+                content: 'observable final answer',
+              },
+            }],
+          },
+          {
+            id: 'chatcmpl_observable_search_2',
+            created: 1_700_000_464,
+            model: 'relay-search-model',
+            choices: [{
+              index: 0,
+              finish_reason: 'stop',
+            }],
+          },
+        ]);
+      }
+      return createEventStreamResponse([
+        {
+          id: 'chatcmpl_observable_search_1',
+          created: 1_700_000_464,
+          model: 'relay-search-model',
+          choices: [{
+            index: 0,
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: 'call_observable_search_1',
+                type: 'function',
+                function: {
+                  name: 'relay_web_search',
+                  arguments: '{"query":"observable search"}',
+                },
+              }],
+            },
+          }],
+        },
+        {
+          id: 'chatcmpl_observable_search_1',
+          created: 1_700_000_464,
+          model: 'relay-search-model',
+          choices: [{
+            index: 0,
+            finish_reason: 'tool_calls',
+          }],
+        },
+      ]);
+    }) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'relay-search-model',
+        input: 'Find observable relay info.',
+        stream: true,
+        tools: [{
+          type: 'web_search_preview',
+        }],
+      }),
+    });
+    const events = parseSseText(await response.text());
+    assert.equal(response.status, 200);
+    assert.deepEqual(events.slice(0, 3).map((event) => event.event), [
+      'hosted_tool.started',
+      'hosted_tool.delta',
+      'hosted_tool.completed',
+    ]);
+    assert.equal(events[0].data.hosted_tool.name, 'web_search');
+    assert.equal(events[0].data.hosted_tool.call_id, 'call_observable_search_1');
+    assert.equal(events[1].data.hosted_tool.delta, 'querying search provider');
+    assert.equal(events[1].data.hosted_tool.metadata.phase, 'query');
+    assert.equal(events[2].data.hosted_tool.metadata.provider, 'test-search');
+    assert.match(events[2].data.hosted_tool.output_preview, /Observable Relay Result/u);
+    assert.equal(events.some((event) => event.event === 'response.output_text.delta'), true);
+    assert.equal(events.at(-1)?.event, 'response.completed');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('adapter server emits hosted tool failed SSE events when an executor throws', async () => {
+  const upstreamRequests: any[] = [];
+  const server = new OpenAICompatibleResponsesAdapterServer({
+    apiKey: 'test-key',
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'web_search',
+      mode: 'relay-emulated',
+      relayToolName: 'relay_web_search',
+    }],
+    hostedToolExecutors: {
+      web_search: async () => {
+        throw new Error('search backend unavailable');
+      },
+    },
+    emitHostedToolSseEvents: true,
+    fetchImpl: (async (_url, init) => {
+      const requestBody = JSON.parse(String(init?.body ?? '{}'));
+      upstreamRequests.push(requestBody);
+      if (upstreamRequests.length === 1) {
+        return createEventStreamResponse([
+          {
+            id: 'chatcmpl_failed_search_1',
+            created: 1_700_000_465,
+            model: 'relay-search-model',
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: 'call_failed_search_1',
+                  type: 'function',
+                  function: {
+                    name: 'relay_web_search',
+                    arguments: '{"query":"failed search"}',
+                  },
+                }],
+              },
+            }],
+          },
+          {
+            id: 'chatcmpl_failed_search_1',
+            created: 1_700_000_465,
+            model: 'relay-search-model',
+            choices: [{
+              index: 0,
+              finish_reason: 'tool_calls',
+            }],
+          },
+        ]);
+      }
+      assert.match(requestBody.messages.at(-1).content, /search backend unavailable/u);
+      return createEventStreamResponse([
+        {
+          id: 'chatcmpl_failed_search_2',
+          created: 1_700_000_466,
+          model: 'relay-search-model',
+          choices: [{
+            index: 0,
+            delta: {
+              content: 'handled search failure',
+            },
+          }],
+        },
+        {
+          id: 'chatcmpl_failed_search_2',
+          created: 1_700_000_466,
+          model: 'relay-search-model',
+          choices: [{
+            index: 0,
+            finish_reason: 'stop',
+          }],
+        },
+      ]);
+    }) as typeof fetch,
+  });
+
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'relay-search-model',
+        input: 'Find failed relay info.',
+        stream: true,
+        tools: [{
+          type: 'web_search_preview',
+        }],
+      }),
+    });
+    const events = parseSseText(await response.text());
+    assert.equal(response.status, 200);
+    assert.deepEqual(events.slice(0, 2).map((event) => event.event), [
+      'hosted_tool.started',
+      'hosted_tool.failed',
+    ]);
+    assert.equal(events[1].data.hosted_tool.error.message, 'search backend unavailable');
+    assert.equal(events.at(-1)?.data.response.output[0].content[0].text, 'handled search failure');
+  } finally {
+    await server.stop();
+  }
+});
+
 test('adapter server rejects streamed turns that mix relay and non-relay tool calls', async () => {
   const server = new OpenAICompatibleResponsesAdapterServer({
     apiKey: 'test-key',

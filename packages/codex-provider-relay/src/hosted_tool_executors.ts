@@ -13,12 +13,18 @@ export interface CodexProviderRelayHostedToolExecutionRequest {
   model: string | null;
   providerKind: string | null;
   providerName: string | null;
+  emitDelta?: CodexProviderRelayHostedToolDeltaEmitter | null;
 }
 
 export interface CodexProviderRelayHostedToolExecutionResult {
   content: unknown;
   metadata?: JsonRecord | null;
 }
+
+export type CodexProviderRelayHostedToolDeltaEmitter = (
+  delta: unknown,
+  metadata?: JsonRecord | null,
+) => void | Promise<void>;
 
 export type CodexProviderRelayHostedToolExecutor = (
   request: CodexProviderRelayHostedToolExecutionRequest,

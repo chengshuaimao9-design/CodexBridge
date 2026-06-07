@@ -40,12 +40,15 @@ Last updated: 2026-06-07
 - [x] Relay-emulated hosted tool execution foundation: package-level executor registry is implemented, `web_search` declarations can be converted into relay-owned Chat function tools, and the local adapter can execute upstream tool calls then continue the Chat Completions loop before returning a Codex-compatible Responses result.
 - [x] Relay-emulated `web_search` streaming loop: streamed relay-owned tool-call deltas are consumed internally, the executor result is appended as a Chat tool message, and the follow-up upstream answer stream is forwarded through the existing Responses SSE translator.
 - [x] Reusable `web_search` executor factory: Tavily, Brave Search, and Serper adapters normalize results into the relay-hosted tool output contract without storing provider secrets in the SDK.
+- [x] Opt-in hosted-tool SSE observability: stream clients can enable `emitHostedToolSseEvents` to receive `hosted_tool.started`, `hosted_tool.delta`, `hosted_tool.completed`, and `hosted_tool.failed` lifecycle events without exposing internal relay tool names by default.
+- [x] Relay-emulated `file_search` protocol loop: `file_search` declarations can be converted into relay-owned Chat function tools, executed through the package executor registry, and streamed through the same internal tool-call continuation path as `web_search`.
+- [x] Reusable local filesystem `file_search` executor: explicit roots, default dependency/build/binary ignores, symlink opt-in, bounded scan limits, bounded file reads, snippets, and optional full content are implemented without depending on CodexBridge host state.
 
 ### Still To Do
 
 - [ ] Split `responses_adapter.ts` into the proposed smaller modules: `responses_to_chat.ts`, `chat_to_responses.ts`, and `chat_sse_to_responses.ts`.
-- [ ] Add observable hosted-tool execution SSE events so relay-owned streamed tool-call deltas and executor lifecycle can be inspected without exposing internal relay function names to Codex.
-- [ ] Add concrete hosted-tool adapters beyond web search: file search, code interpreter, image generation, and computer-use adapters as separate opt-ins.
+- [ ] Add semantic/vector `file_search` source adapters as separate opt-ins behind the existing executor contract.
+- [ ] Add concrete hosted-tool adapters for code interpreter, image generation, and computer-use as separate opt-ins.
 
 ## Source Baseline
 

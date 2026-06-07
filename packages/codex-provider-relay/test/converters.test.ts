@@ -64,6 +64,39 @@ test('responses conversion exposes relay-emulated web_search as a Chat function 
   });
 });
 
+test('responses conversion exposes relay-emulated file_search as a Chat function tool', () => {
+  const chat = responsesRequestToChatCompletions({
+    model: 'example-model',
+    input: 'search configured files',
+    tools: [{
+      type: 'file_search',
+    }],
+    tool_choice: 'file_search',
+  }, {
+    providerCapabilities: {
+      supportsBuiltinWebSearchTool: false,
+    },
+    hostedTools: [{
+      name: 'file_search',
+      mode: 'relay-emulated',
+      providerToolName: null,
+      relayToolName: 'relay_file_search',
+      description: 'Search local configured files.',
+    }],
+  });
+
+  assert.equal(chat.tools[0].type, 'function');
+  assert.equal(chat.tools[0].function.name, 'relay_file_search');
+  assert.equal(chat.tools[0].function.parameters.required[0], 'query');
+  assert.equal(chat.tools[0].function.parameters.properties.path_glob.type, 'string');
+  assert.deepEqual(chat.tool_choice, {
+    type: 'function',
+    function: {
+      name: 'relay_file_search',
+    },
+  });
+});
+
 test('chat response conversion is available from the package boundary', () => {
   const response = chatCompletionsResponseToResponses({
     id: 'chatcmpl_test',

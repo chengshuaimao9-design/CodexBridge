@@ -106,9 +106,11 @@ Current package support:
 
 - `web_search` can be declared as `relay-emulated` and backed by a host-provided executor registry.
 - The SDK includes fetch-based `web_search` executor factories for Tavily, Brave Search, and Serper; hosts pass keys at runtime.
+- `file_search` can be declared as `relay-emulated` and backed by the same executor registry.
+- The SDK includes a local filesystem `file_search` executor for explicitly configured roots. It does not scan cwd implicitly, skips common dependency/build/binary paths by default, and bounds scanned files, file bytes, snippets, and results.
 - Non-streaming Chat Completions loops are executed inside the relay: upstream tool call -> relay executor -> tool output message -> follow-up upstream call -> Codex-compatible Responses result.
 - Streaming Chat Completions loops are executed inside the relay: upstream streamed relay tool-call deltas are consumed internally, the executor result is appended as a tool message, and the follow-up upstream answer stream is forwarded through the existing Responses SSE translator.
-- Exposing hosted-tool execution progress itself as ordered observable SSE events is intentionally not treated as complete yet.
+- Hosted-tool execution progress can be exposed with the opt-in `emitHostedToolSseEvents` flag. The relay then emits `hosted_tool.started`, `hosted_tool.delta`, `hosted_tool.completed`, and `hosted_tool.failed` before normal Responses SSE events. This remains opt-in because these are relay-specific event names, not baseline Responses API events.
 
 ## Migration Plan
 
@@ -121,4 +123,4 @@ Current package support:
 7. Allow CodexNext to consume the same package without importing CodexBridge internals.
 8. Expose high-level official/mixed/pure API profile builders so app-servers can avoid invalid auth/protocol combinations.
 9. Keep `codex-gateway` only as a temporary compatibility package or historical reference; new consumers should import only `@codexbridge/codex-provider-relay`.
-10. Extend relay-emulated hosted tools with explicit observable execution events, then add file/search/code/image/computer executors as separate adapters.
+10. Add remaining hosted-tool executors as separate adapters, keeping each capability explicitly declared and independently testable. Local filesystem `file_search` is implemented first; semantic/vector `file_search`, code interpreter, image generation, and computer-use adapters remain future work.

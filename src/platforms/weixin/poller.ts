@@ -84,6 +84,13 @@ export class WeixinPoller {
       try {
         const result = await this.plugin.pollOnce({ syncCursor: this.nextSyncCursor });
         this.nextSyncCursor = result?.syncCursor ?? this.nextSyncCursor;
+
+        const wasRecovered = this.consecutiveErrors > 0;
+        this.consecutiveErrors = 0;
+        this.lastSuccessfulPollAt = Date.now();
+        if (wasRecovered) {
+          await this.onConnectionRestored();
+        }
         const dispatchOutcome = await this.dispatchEvents(result?.events ?? []);
         void dispatchOutcome.completion.catch(async (error) => {
           // Service-mode cursor persistence must not wait on long-running turn completion.
@@ -116,6 +123,17 @@ export class WeixinPoller {
 
   stop() {
     this.running = false;
+  }
+
+
+  getStatus() {
+    return {
+      running: this.running,
+      consecutiveErrors: this.consecutiveErrors,
+      lastSuccessfulPollAt: this.lastSuccessfulPollAt,
+      isConnected: this.running && this.consecutiveErrors === 0,
+      wasEverConnected: this.lastSuccessfulPollAt > 0,
+    };
   }
 
   async dispatchEvents(events: unknown[]) {

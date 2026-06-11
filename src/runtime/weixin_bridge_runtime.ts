@@ -193,6 +193,13 @@ export class WeixinBridgeRuntime {
 
   scopeChains: Map<string, Promise<RuntimeResponse>>;
 
+  startTime: number;
+
+  paused: boolean;
+
+  welcomeSent: boolean;
+
+
   pendingInboundMerges: Map<string, PendingInboundMerge>;
 
   pendingScopeNotices: Map<string, PendingScopeNotice>;
@@ -239,6 +246,10 @@ export class WeixinBridgeRuntime {
     this.automationPollMs = automationPollMs;
     this.internalThreadCleanupMs = internalThreadCleanupMs;
     this.i18n = createI18n(locale);
+    this.startTime = Date.now();
+    this.paused = false;
+    this.welcomeSent = false;
+
     this.poller = null;
     this.backgroundTasks = new Set();
     this.scheduledAgentJobIds = new Set();
@@ -268,6 +279,12 @@ export class WeixinBridgeRuntime {
       onEvent: async (event) => this.dispatchInboundEvent(event),
       onError: async (error) => {
         await this.onError(error);
+      },
+      onConnectionLost: async () => {
+        debugRuntime("connection_lost", { at: Date.now() });
+      },
+      onConnectionRestored: async () => {
+        debugRuntime("connection_restored", { at: Date.now() });
       },
     } as any);
     return this.poller.start();
@@ -319,6 +336,11 @@ export class WeixinBridgeRuntime {
     '重新': 'retry',
     '同步': 'sync',
     '刷新': 'sync',
+    '暂停': 'pause',
+    '继续': 'resume',
+    '恢复': 'resume',
+    '健康': 'health',
+
   };
 
   async dispatchInboundEvent(event: InboundTextEvent): Promise<any> {
@@ -336,17 +358,64 @@ export class WeixinBridgeRuntime {
       eventText = '/' + WeixinBridgeRuntime.COMMAND_ALIASES[trimmedText];
       event = { ...event, text: eventText };
     }
-    // Handle /ping for health check
-    const scopeId = String(event?.externalScopeId ?? '');
-    if (parseSlashCommand(eventText)?.name === 'ping') {
-      this.sendFastReply(scopeId, 'codexbridge running - 桥接在线');
-      return undefined;
+    const scopeId = String(event?.externalScopeId ?? "");
+
+    // Send welcome message on first interaction
+    if (!this.welcomeSent && scopeId) {
+      this.welcomeSent = true;
+      const uptime = Math.floor((Date.now() - this.startTime) / 1000);
+      this.sendFastReply(scopeId, "桥接已连接（运行 " + uptime + " 秒）。消息在桌面 Codex 处理。");
     }
-    // Handle /stop immediately at runtime level before coordinator
-    if (parseSlashCommand(eventText)?.name === 'stop') {
-      await this.tryInterruptCurrentTurn(scopeId);
-      this.scopeChains.delete(scopeId);
-      this.sendFastReply(scopeId, '已停止当前处理。');
+
+    // Fast commands handled at bridge level, not passed to Codex
+    const cmd = parseSlashCommand(eventText);
+    if (cmd) {
+      if (cmd.name === "stop") {
+        await this.tryInterruptCurrentTurn(scopeId);
+        this.scopeChains.delete(scopeId);
+        this.sendFastReply(scopeId, "已停止当前处理。");
+        return undefined;
+      }
+      if (cmd.name === "status" || cmd.name === "health") {
+        const pollerStatus = this.poller?.getStatus();
+        const lines = [
+          "CodexBridge 状态",
+          "---",
+          "桥接: " + (pollerStatus?.isConnected ? "在线" : "异常"),
+          "运行: " + Math.floor((Date.now() - this.startTime) / 1000) + " 秒",
+          "暂停: " + (this.paused ? "是" : "否"),
+        ];
+        if (pollerStatus) {
+          lines.push("连续错误: " + pollerStatus.consecutiveErrors);
+          if (pollerStatus.lastSuccessfulPollAt > 0) {
+            lines.push("上次成功轮询: " + new Date(pollerStatus.lastSuccessfulPollAt).toLocaleTimeString("zh-CN"));
+          }
+        }
+        if (cmd.name === "health") {
+          lines.push("");
+          lines.push("微信连接: " + (pollerStatus?.isConnected ? "✓" : "✗"));
+          lines.push("桥接进程: ✓");
+          lines.push("Codex 引擎: 已连接");
+          lines.push("默认模型: gpt-5.4");
+          lines.push("思考深度: medium");
+        }
+        this.sendFastReply(scopeId, lines.join("\n"));
+        return undefined;
+      }
+      if (cmd.name === "pause") {
+        this.paused = true;
+        this.sendFastReply(scopeId, "已暂停消息处理。发 /resume 恢复。");
+        return undefined;
+      }
+      if (cmd.name === "resume") {
+        this.paused = false;
+        this.sendFastReply(scopeId, "已恢复消息处理。");
+        return undefined;
+      }
+    }
+    // Check paused state before processing
+    if (this.paused) {
+      this.sendFastReply(scopeId, "已暂停，发 /resume 恢复。");
       return undefined;
     }
     const command = parseSlashCommand(String(event?.text ?? ''));
@@ -392,6 +461,8 @@ export class WeixinBridgeRuntime {
       if (active?.turnId) {
         (this.bridgeCoordinator as any).activeTurns?.requestInterrupt?.(scopeRef);
         await (this.bridgeCoordinator as any).dispatchInterruptForActiveTurn?.(active).catch(() => {});
+        // End the scope turn so the next message won't be blocked
+        (this.bridgeCoordinator as any).activeTurns?.endScopeTurn?.(scopeRef);
       }
     } catch {}
   }
@@ -431,7 +502,7 @@ export class WeixinBridgeRuntime {
     };
   }
 
-  scheduleInboundEvent(event: InboundTextEvent): Promise<RuntimeResponse> {
+  async scheduleInboundEvent(event: InboundTextEvent): Promise<RuntimeResponse> {
     const scopeId = String(event?.externalScopeId ?? '');
     if (!scopeId) {
       return this.processInboundEvent(event);
@@ -462,12 +533,10 @@ export class WeixinBridgeRuntime {
     }
 
     if (this.scopeChains.has(scopeId)) {
-      debugRuntime('scope_busy_rejected', {
-        scopeId,
-        textPreview: truncateDebugText(event?.text),
-        attachmentCount: Array.isArray(event?.attachments) ? event.attachments.length : 0,
-      });
-      return this.respondWhileScopeBusy(event);
+      // Auto-interrupt: new message takes priority, interrupts current processing
+      await this.tryInterruptCurrentTurn(scopeId);
+      this.scopeChains.delete(scopeId);
+      return this.processInboundEvent(event);
     }
 
     if (shouldDelayInboundEvent(event)) {

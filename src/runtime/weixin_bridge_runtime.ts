@@ -305,12 +305,48 @@ export class WeixinBridgeRuntime {
     return this.scheduleInboundEvent(event);
   }
 
+  // Chinese command aliases for WeChat users
+  static readonly COMMAND_ALIASES: Record<string, string> = {
+    '中断': 'stop',
+    '停止': 'stop',
+    '终止': 'stop',
+    '帮助': 'helps',
+    '状态': 'status',
+    '模型': 'model',
+    '型号': 'models',
+    '快速': 'fast',
+    '新对话': 'new',
+    '重新': 'retry',
+    '同步': 'sync',
+    '刷新': 'sync',
+  };
+
   async dispatchInboundEvent(event: InboundTextEvent): Promise<any> {
     if (isLocalKeepalivePulse(event)) {
       debugRuntime('local_keepalive_pulse_swallowed', {
         scopeId: event.externalScopeId,
         textPreview: truncateDebugText(event?.text),
       });
+      return undefined;
+    }
+    let eventText = String(event?.text ?? '');
+    // Check for Chinese command aliases
+    const trimmedText = eventText.trim();
+    if (trimmedText in WeixinBridgeRuntime.COMMAND_ALIASES) {
+      eventText = '/' + WeixinBridgeRuntime.COMMAND_ALIASES[trimmedText];
+      event = { ...event, text: eventText };
+    }
+    // Handle /ping for health check
+    const scopeId = String(event?.externalScopeId ?? '');
+    if (parseSlashCommand(eventText)?.name === 'ping') {
+      this.sendFastReply(scopeId, 'codexbridge running - 桥接在线');
+      return undefined;
+    }
+    // Handle /stop immediately at runtime level before coordinator
+    if (parseSlashCommand(eventText)?.name === 'stop') {
+      await this.tryInterruptCurrentTurn(scopeId);
+      this.scopeChains.delete(scopeId);
+      this.sendFastReply(scopeId, '已停止当前处理。');
       return undefined;
     }
     const command = parseSlashCommand(String(event?.text ?? ''));
@@ -341,6 +377,23 @@ export class WeixinBridgeRuntime {
       type: 'scheduled',
       completion: task,
     };
+  }
+
+  // Send a fast text reply without going through the full processing pipeline
+  async sendFastReply(scopeId: string, text: string): Promise<void> {
+    try { await this.platformPlugin?.sendText?.({ externalScopeId: scopeId, content: text }); } catch {}
+  }
+
+  // Try to interrupt the currently processing turn for this scope
+  async tryInterruptCurrentTurn(scopeId: string): Promise<void> {
+    try {
+      const scopeRef = { platform: 'weixin', externalScopeId: scopeId };
+      const active = await (this.bridgeCoordinator as any).reconcileActiveTurn?.(scopeRef);
+      if (active?.turnId) {
+        (this.bridgeCoordinator as any).activeTurns?.requestInterrupt?.(scopeRef);
+        await (this.bridgeCoordinator as any).dispatchInterruptForActiveTurn?.(active).catch(() => {});
+      }
+    } catch {}
   }
 
   async waitForIdle(): Promise<void> {

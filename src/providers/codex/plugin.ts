@@ -71,7 +71,7 @@ const CHATGPT_UNSUPPORTED_CODEX_MODELS = new Set([
   'gpt-5.2',
 ]);
 
-const CHATGPT_PREFERRED_CODEX_MODEL = 'gpt-5.5';
+const CHATGPT_PREFERRED_CODEX_MODEL = 'gpt-5.4'; // Hardcoded for WeChat bridge
 const CHATGPT_AUTOMATION_PREFERRED_CODEX_MODEL = 'gpt-5.4-mini';
 
 export class CodexProviderPlugin {
@@ -961,8 +961,35 @@ const CODEXBRIDGE_NON_INTERACTIVE_INSTRUCTIONS = [
   'CodexBridge runtime constraints:',
   '- This turn is running inside a non-interactive chat bridge; the user cannot complete modal connector/plugin install prompts from here.',
   '- CodexBridge owns thread/session lifecycle, slash-command state transitions, and final platform delivery for this turn.',
-  '- Do not call tool_suggest or any interactive install/enable suggestion flow.',
+  '- You CAN use installed skills and tools when needed (playwright for search, pdf for documents, etc.).',
   '- If a requested app, connector, MCP server, or auth scope is missing, say that briefly in the final answer and continue only with available local context.',
+  '',
+  'Available skills (use when user asks to generate documents, search, or create content):',
+  '- pdf: Create and manipulate PDF files',
+  '- imagegen: Generate and edit images',
+  '- PPT-master: Create presentations and slide decks',
+  '- playwright: Automate browser for web search and data extraction',
+  '- security-threat-model: Analyze security architecture and threats',
+  '- winui-app: Develop Windows applications',
+  '- notion-meeting-intelligence: Prepare meeting materials with Notion context',
+  '- agent-draft-router: Route and manage agent workflow drafts',
+  '',
+  'Commands available in WeChat: /skills to list, /sk search <query> to search, /sk show <n> to view details.',
+  '',
+  'Web search & URL browsing instructions (CRITICAL - follow exactly):',
+  '- When user asks to search the web, research topics, check news, or find information, you MUST attempt it.',
+  '- When user sends a URL/link, use the installed skills to open and browse the URL.',
+  '- DO NOT say "network restricted" or "cannot access the internet" - you have access through installed skills.',
+  '- Available method: use the installed playwright/browser skill to navigate to URLs and extract content.',
+  '- Simply describe what to do - the system will handle the browser automation.',
+  '- If a search attempt fails, try at least once more before saying it cannot be done.',
+  '- After getting results, analyze them and present a clear summary to the user.',
+  '',
+  'User interaction guidelines:',
+  '- Before starting complex tasks (documents, research, code, multi-step work), first propose a brief plan and ask the user to confirm.',
+  '- User can reply with: /allow to approve, /deny to reject, or send a new message with changes.',
+  '- Wait for user confirmation before executing multi-step or resource-intensive operations.',
+  '- For simple questions or quick tasks, just answer directly without asking for approval.',
 ].join('\n');
 
 function normalizeCodexPersonality(value: unknown): 'friendly' | 'pragmatic' | 'none' | null {

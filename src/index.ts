@@ -1,6 +1,5 @@
 import { createCodexBridgeRuntime } from './runtime/bootstrap.js';
 import { WeixinPlatformPlugin } from './platforms/weixin/plugin.js';
-import { TelegramPlatformPlugin } from './platforms/telegram/plugin.js';
 import { loadCodexProfilesFromEnv } from './providers/codex/config.js';
 import { CodexProviderPlugin } from './providers/codex/plugin.js';
 import { OpenAINativeProviderPlugin } from './providers/openai_native/plugin.js';
@@ -11,7 +10,6 @@ import type { ProviderPluginContract } from './types/provider.js';
 export {
   createCodexBridgeRuntime,
   WeixinPlatformPlugin,
-  TelegramPlatformPlugin,
   CodexProviderPlugin,
   loadCodexProfilesFromEnv,
   OpenAINativeProviderPlugin,
@@ -23,7 +21,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const runtime = createCodexBridgeRuntime({
     platformPlugins: [
       new WeixinPlatformPlugin(),
-      new TelegramPlatformPlugin(),
     ],
     providerPlugins: [
       new OpenAINativeProviderPlugin(),

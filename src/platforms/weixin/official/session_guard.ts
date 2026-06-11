@@ -1,4 +1,4 @@
-const SESSION_PAUSE_DURATION_MS = 60 * 60 * 1000;
+const SESSION_PAUSE_DURATION_MS = 30 * 1000; // Reduced from 1 hour to 30 seconds for faster recovery
 
 export const SESSION_EXPIRED_ERRCODE = -14;
 

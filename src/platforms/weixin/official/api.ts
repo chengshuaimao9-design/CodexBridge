@@ -19,10 +19,25 @@ import type {
 
 const ILINK_APP_ID = 'bot';
 const ILINK_APP_CLIENT_VERSION = (2 << 16) | (2 << 8) | 0;
-const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
+const DEFAULT_LONG_POLL_TIMEOUT_MS = 20_000; // Reduced for faster poll recovery
 const DEFAULT_API_TIMEOUT_MS = 15_000;
 const DEFAULT_CONFIG_TIMEOUT_MS = 10_000;
 const DEFAULT_CHANNEL_VERSION = '2.2.0';
+// Shared HTTPS agent with keepAlive for connection reuse
+const sharedHttpsAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 30000, maxSockets: 8, maxFreeSockets: 4, timeout: 120000 });
+sharedHttpsAgent.setMaxListeners(20);
+// Recover from socket errors gracefully (use once to prevent listener leaks)
+sharedHttpsAgent.on('free', (socket) => {
+  const maxListeners = socket.getMaxListeners();
+  if (socket.listenerCount('error') < maxListeners) {
+    socket.on('error', () => socket.destroy());
+  }
+});
+
+export function destroySharedAgent(): void {
+  sharedHttpsAgent.destroy();
+}
+
 
 interface WeixinFetchResponse {
   ok: boolean;
@@ -373,16 +388,61 @@ async function requestJsonWithAddressRotation<T>(params: RawRequestOptions & {
   throw new Error(String(lastError ?? 'Weixin request failed'));
 }
 
+// DNS cache for DoH results to avoid repeated lookups
+const dnsCache = new Map<string, { addresses: string[]; expiresAt: number }>();
+// Pre-warm DNS for WeChat API on module load
+{
+  const hostname = 'ilinkai.weixin.qq.com';
+  fetch(`https://dns.google/resolve?name=${encodeURIComponent(hostname)}&type=A`, { signal: AbortSignal.timeout(5000) })
+    .then(r => r.json())
+    .then((data: any) => {
+      const ips = data?.Answer?.filter((r: any) => r.type === 1).map((r: any) => r.data).filter((a: any) => !(a || "").startsWith('198.18.'));
+      if (ips?.length > 0) dnsCache.set(hostname, { addresses: [...new Set<string>(ips)], expiresAt: Date.now() + 300000 });
+    })
+    .catch(() => {});
+}
+const DNS_CACHE_TTL_MS = 300_000;
+
 async function resolveHostAddresses(hostname: string): Promise<string[]> {
+  const cached = dnsCache.get(hostname);
+  if (cached && Date.now() < cached.expiresAt) return cached.addresses;
+
+  // Use DoH (DNS-over-HTTPS) to bypass DNS poisoning from proxy software
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const response = await fetch(
+      `https://dns.google/resolve?name=${encodeURIComponent(hostname)}&type=A`,
+      { signal: controller.signal }
+    );
+    clearTimeout(timeout);
+    const data = await response.json() as { Answer?: Array<{ name: string; type: number; data: string }> };
+    if (data.Answer) {
+      const addresses = data.Answer
+        .filter((r: { type: number }) => r.type === 1)
+        .map((r: { data: string }) => r.data)
+        .filter((addr: string) => !addr.startsWith('198.18.'));
+      if (addresses.length > 0) {
+        const unique = [...new Set(addresses)];
+        dnsCache.set(hostname, { addresses: unique, expiresAt: Date.now() + DNS_CACHE_TTL_MS });
+        return unique;
+      }
+    }
+  } catch {}
+
+  // Fallback to system DNS
   try {
     const records = await dns.lookup(hostname, { all: true });
     const addresses = records
       .map((record) => record.address)
-      .filter((address) => typeof address === 'string' && address.trim());
-    return [...new Set(addresses)].length > 0 ? [...new Set(addresses)] : [hostname];
-  } catch {
-    return [hostname];
-  }
+      .filter((address: string) => typeof address === 'string' && address.trim() && !address.startsWith('198.18.'));
+    const unique = [...new Set(addresses)];
+    if (unique.length > 0) {
+      dnsCache.set(hostname, { addresses: unique, expiresAt: Date.now() + 60000 });
+      return unique;
+    }
+  } catch {}
+  return [hostname];
 }
 
 function requestJsonOverHttpsAddress({
@@ -417,7 +477,10 @@ function requestJsonOverHttpsAddress({
       path: `${url.pathname}${url.search}`,
       headers,
       servername: url.hostname,
+      agent: sharedHttpsAgent,
+      timeout: Math.min(timeoutMs, 30000),
     }, (response) => {
+      request.setTimeout(0);
       const chunks: Buffer[] = [];
       response.on('data', (chunk) => {
         chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));

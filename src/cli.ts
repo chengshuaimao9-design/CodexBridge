@@ -19,6 +19,14 @@ import { OpenAINativeProviderPlugin } from './providers/openai_native/plugin.js'
 import { OpenAICompatibleProviderPlugin } from './providers/openai_compatible/plugin.js';
 import { WeixinBridgeRuntime } from './runtime/weixin_bridge_runtime.js';
 import { createI18n } from './i18n/index.js';
+// Global error handlers to prevent crashes from unhandled rejections/exceptions
+process.on('unhandledRejection', (reason) => {
+  process.stderr.write(`[fatal] Unhandled Rejection: ${reason instanceof Error ? reason.stack || reason.message : String(reason)}\n`);
+});
+process.on('uncaughtException', (error) => {
+  process.stderr.write(`[fatal] Uncaught Exception: ${error instanceof Error ? error.stack || error.message : String(error)}\n`);
+});
+
 
 const CLI_FILE = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(CLI_FILE), '..');
@@ -287,6 +295,7 @@ async function runWeixinServe(args: string[]) {
     } finally {
       await stopRuntimeProviderPlugins(runtime.registry.listProviders());
       await serveLock.release();
+      try { await import("./platforms/weixin/official/api.js").then(m => m.destroySharedAgent?.()); } catch {}
       process.exit(0);
     }
   };

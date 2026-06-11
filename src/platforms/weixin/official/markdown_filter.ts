@@ -382,9 +382,11 @@ export class StreamingMarkdownFilter {
         }
         const cp = this.inl.acc.indexOf(')', cb + 2);
         if (cp !== -1) {
+          const altText = this.inl.acc.slice(0, cb);
+          const imgUrl = this.inl.acc.slice(cb + 2, cp);
           this.buf = this.inl.acc.slice(cp + 1);
           this.inl = null;
-          return '';
+          return altText ? ` [图片: ${altText}](${imgUrl}) ` : ` [图片](${imgUrl}) `;
         }
         return '';
       }

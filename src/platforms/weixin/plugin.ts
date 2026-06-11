@@ -111,7 +111,7 @@ export class WeixinPlatformPlugin implements Pick<PlatformPluginContract, 'id' |
   constructor({
     config,
     accountStore,
-    chunkIntervalMs = 3000,
+    chunkIntervalMs = 500, // Reduced from 3000ms for faster delivery
     sleepImpl = sleep,
     nowFn = Date.now,
     locale = null,
@@ -194,8 +194,25 @@ export class WeixinPlatformPlugin implements Pick<PlatformPluginContract, 'id' |
       return null;
     }
     const text = extractText(payload.item_list ?? []);
-    const { attachments, errors: attachmentErrors } = await this.downloadInboundAttachments(payload);
-    if (!text && attachments.length === 0 && attachmentErrors.length === 0) {
+    // For voice messages with transcription text, download attachment in background
+    // so the message is processed as fast as text
+    const voiceText = extractVoiceTranscription(payload.item_list ?? []);
+    const isVoiceWithText = Boolean(voiceText && voiceText.trim());
+    const { attachments, errors: attachmentErrors } = isVoiceWithText
+      ? { attachments: [], errors: [] }  // Voice with transcription: don't block on download
+      : await this.downloadInboundAttachments(payload);
+    // Download voice file in background for archival
+    if (isVoiceWithText) {
+      this.downloadInboundAttachments(payload).then(result => {
+        if (result.attachments.length > 0) {
+          debugWeixin('voice_file_downloaded_background', {
+            count: result.attachments.length,
+            errors: result.errors,
+          });
+        }
+      }).catch(() => {});
+    }
+    if (!text && !voiceText && attachments.length === 0 && attachmentErrors.length === 0) {
       debugWeixin('drop_message', {
         reason: 'no_supported_content',
         scopeId: scope.externalScopeId,
@@ -845,6 +862,16 @@ export function resolveWeixinScope(message: WeixinInboundPayload, accountId: str
     chatType: 'dm',
     externalScopeId: stringValue(message.from_user_id) ?? '',
   };
+}
+
+export function extractVoiceTranscription(itemList: MessageItem[]) {
+  for (const item of itemList) {
+    if (Number(item?.type) === MessageItemType.VOICE) {
+      const text = stringValue(item?.voice_item?.text);
+      if (text) return text;
+    }
+  }
+  return '';
 }
 
 export function extractText(itemList: MessageItem[]) {

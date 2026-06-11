@@ -12,3 +12,12 @@ coverage/
 .codexbridge/
 reports/
 reference/
+
+# 微信桥接运行时数据（每个机器/用户不同）
+bridge_data/
+bridge-runner.sh
+~/codexbridge.sh
+*.log
+
+# 媒体下载
+weixin/inbound/

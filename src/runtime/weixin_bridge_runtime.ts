@@ -185,6 +185,12 @@ export class WeixinBridgeRuntime {
 
   poller: WeixinPoller | null;
 
+  /** Track last reconnect attempt to avoid rapid restart loops */
+  lastReconnectAt: number;
+
+  /** Minimum interval between automatic reconnection attempts */
+  static readonly RECONNECT_COOLDOWN_MS = 60_000;
+
   backgroundTasks: Set<Promise<RuntimeResponse>>;
 
   scheduledAgentJobIds: Set<string>;
@@ -251,6 +257,7 @@ export class WeixinBridgeRuntime {
     this.welcomeSent = false;
 
     this.poller = null;
+    this.lastReconnectAt = 0;
     this.backgroundTasks = new Set();
     this.scheduledAgentJobIds = new Set();
     this.scheduledAssistantReminderIds = new Set();
@@ -281,7 +288,20 @@ export class WeixinBridgeRuntime {
         await this.onError(error);
       },
       onConnectionLost: async () => {
-        debugRuntime("connection_lost", { at: Date.now() });
+        const now = Date.now();
+        debugRuntime("connection_lost", { at: now });
+        // Attempt to reconnect the platform plugin if enough time has passed
+        if (now - this.lastReconnectAt > WeixinBridgeRuntime.RECONNECT_COOLDOWN_MS) {
+          this.lastReconnectAt = now;
+          debugRuntime("connection_reconnect_start", { at: now });
+          try {
+            await this.platformPlugin.stop();
+            await this.platformPlugin.start();
+            debugRuntime("connection_reconnect_ok", { at: Date.now() });
+          } catch (err) {
+            debugRuntime("connection_reconnect_fail", { at: Date.now(), error: String(err) });
+          }
+        }
       },
       onConnectionRestored: async () => {
         debugRuntime("connection_restored", { at: Date.now() });
@@ -412,6 +432,21 @@ export class WeixinBridgeRuntime {
         this.sendFastReply(scopeId, "已恢复消息处理。");
         return undefined;
       }
+      if (cmd.name === "helps") {
+        const helps = [
+          "CodexBridge 微信命令",
+          "状态 - 桥接运行状态",
+          "健康 - 完整链路诊断",
+          "暂停 - 暂停消息处理",
+          "继续/恢复 - 恢复处理",
+          "新对话 - 开启新会话",
+          "模型 - 查看当前模型",
+          "帮助 - 显示本帮助",
+        ];
+        this.sendFastReply(scopeId, helps.join("\n"));
+        return undefined;
+      }
+
     }
     // Check paused state before processing
     if (this.paused) {

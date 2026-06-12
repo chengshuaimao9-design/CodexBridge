@@ -1065,8 +1065,14 @@ export class BridgeCoordinator {
     return this.handleConversationTurn(event, options);
   }
 
+  /** Auto-expiry for stale pending approvals: 5 minutes */
+  static readonly APPROVAL_EXPIRY_MS = 300_000;
+
   renderApprovalPrompt(event) {
-    const activeTurn = this.activeTurns?.resolveScopeTurn(toScopeRef(event)) ?? null;
+    const scopeRef = toScopeRef(event);
+    // Auto-clear expired approvals before rendering
+    this.activeTurns?.filterExpiredPendingApprovals(scopeRef, BridgeCoordinator.APPROVAL_EXPIRY_MS);
+    const activeTurn = this.activeTurns?.resolveScopeTurn(scopeRef) ?? null;
     const pendingApprovals = Array.isArray(activeTurn?.pendingApprovals) ? activeTurn.pendingApprovals : [];
     if (pendingApprovals.length === 0) {
       return '';

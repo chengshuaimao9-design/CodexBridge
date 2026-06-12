@@ -111,7 +111,7 @@ export class WeixinPlatformPlugin implements Pick<PlatformPluginContract, 'id' |
   constructor({
     config,
     accountStore,
-    chunkIntervalMs = 500, // Reduced from 3000ms for faster delivery
+    chunkIntervalMs = 200,
     sleepImpl = sleep,
     nowFn = Date.now,
     locale = null,

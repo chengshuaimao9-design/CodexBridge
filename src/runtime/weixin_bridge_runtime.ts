@@ -155,7 +155,7 @@ interface WeixinBridgeRuntimeOptions {
 export class WeixinBridgeRuntime {
   static readonly NOTICE_COOLDOWN_MS = 30_000;
   static readonly DEFAULT_TYPING_KEEPALIVE_MS = 4_000;
-  static readonly PREVIEW_MIN_TARGET_BYTES = 200;
+  static readonly PREVIEW_MIN_TARGET_BYTES = 100;
   static readonly AUTOMATION_RATE_LIMIT_RETRY_MS = 10 * 60 * 1000;
   static readonly DELIVERY_SESSION_EXPIRED_RETRY_MS = 60 * 1000;
 
@@ -229,11 +229,11 @@ export class WeixinBridgeRuntime {
     agentJobs = null,
     assistantRecords = null,
     onError = async () => {},
-    previewSoftTargetBytes = 800,
-    previewHardLimitBytes = 1200,
-    previewIntervalMs = 1500,
+    previewSoftTargetBytes = 300,
+    previewHardLimitBytes = 500,
+    previewIntervalMs = 500,
     typingKeepaliveMs = WeixinBridgeRuntime.DEFAULT_TYPING_KEEPALIVE_MS,
-    inboundAttachmentMergeWindowMs = 3000,
+    inboundAttachmentMergeWindowMs = 500,
     automationPollMs = 30_000,
     internalThreadCleanupMs = 24 * 60 * 60 * 1000,
     locale = null,

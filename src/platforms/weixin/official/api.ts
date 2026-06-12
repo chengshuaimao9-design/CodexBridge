@@ -19,7 +19,7 @@ import type {
 
 const ILINK_APP_ID = 'bot';
 const ILINK_APP_CLIENT_VERSION = (2 << 16) | (2 << 8) | 0;
-const DEFAULT_LONG_POLL_TIMEOUT_MS = 20_000; // Reduced for faster poll recovery
+const DEFAULT_LONG_POLL_TIMEOUT_MS = 10_000; // Reduced for faster poll recovery
 const DEFAULT_API_TIMEOUT_MS = 15_000;
 const DEFAULT_CONFIG_TIMEOUT_MS = 10_000;
 const DEFAULT_CHANNEL_VERSION = '2.2.0';

@@ -138,7 +138,9 @@ export class CodexProviderPlugin {
     const sessionSettings = isSessionSettingsLike(metadata?.sessionSettings)
       ? metadata.sessionSettings
       : null;
-    const permissionOverrides = buildCodexPermissionRuntimeOverrides(sessionSettings);
+    // WeChat bridge: use full-access permissions (no approval prompts, full sandbox)
+    const bridgeSettings = sessionSettings ?? { permissionsMode: 'full-access' as const, approvalPolicy: 'never' as const, sandboxMode: 'danger-full-access' as const };
+    const permissionOverrides = buildCodexPermissionRuntimeOverrides(bridgeSettings);
     return client.startThread({
       cwd,
       title,
@@ -359,7 +361,8 @@ export class CodexProviderPlugin {
     const turnInput = buildCodexTurnInput(event, inputText);
     const developerInstructions = buildDeveloperInstructions(event);
     const personality = normalizeCodexPersonality(sessionSettings?.personality ?? null);
-    const permissionOverrides = buildCodexPermissionRuntimeOverrides(sessionSettings);
+    const bridgeSettings = sessionSettings ?? { permissionsMode: 'full-access' as const, approvalPolicy: 'never' as const, sandboxMode: 'danger-full-access' as const };
+    const permissionOverrides = buildCodexPermissionRuntimeOverrides(bridgeSettings);
     const result = await client.startTurn({
       threadId: bridgeSession.codexThreadId,
       inputText: turnInput[0]?.type === 'text' ? turnInput[0].text : inputText,
@@ -958,6 +961,10 @@ function buildDeveloperInstructions(event: InboundTextEvent): string {
 }
 
 const CODEXBRIDGE_NON_INTERACTIVE_INSTRUCTIONS = [
+  'ABSOLUTE RULE: Never install python-pptx, pptxgenjs, or any other library. The installed PPT-master skill handles ALL PPT tasks.',
+  'ABSOLUTE RULE: Never pip install, npm install, or download anything. All needed skills are already installed: PPT-master, pdf, imagegen, Chrome.',
+  'ABSOLUTE RULE: For PPT use PPT-master. For PDF use pdf skill. For images use imagegen. For web search use Chrome or built-in tool. For documents use the available skills.',
+  
   'CodexBridge runtime constraints:',
   '- This turn is running inside a non-interactive chat bridge; the user cannot complete modal connector/plugin install prompts from here.',
   '- CodexBridge owns thread/session lifecycle, slash-command state transitions, and final platform delivery for this turn.',
@@ -968,6 +975,9 @@ const CODEXBRIDGE_NON_INTERACTIVE_INSTRUCTIONS = [
   '- pdf: Create and manipulate PDF files',
   '- imagegen: Generate and edit images',
   '- PPT-master: Create presentations and slide decks',
+  '- CRITICAL: Use the already-installed PPT-master skill for ANY presentation task. Do NOT install npm/module dependencies (pptxgenjs, python-pptx, etc.) for presentation generation - PPT-master handles everything.',
+  '- CRITICAL: For PDF, use the already-installed pdf skill. Do not install new dependencies.',
+  '- IMPORTANT: You already have all needed skills installed. Do not request approval for plugin/module installation - use existing skills.',
   '- playwright: Automate browser for web search and data extraction',
   '- security-threat-model: Analyze security architecture and threats',
   '- winui-app: Develop Windows applications',
@@ -980,7 +990,7 @@ const CODEXBRIDGE_NON_INTERACTIVE_INSTRUCTIONS = [
   '- When user asks to search the web, research topics, check news, or find information, you MUST attempt it.',
   '- When user sends a URL/link, use the installed skills to open and browse the URL.',
   '- DO NOT say "network restricted" or "cannot access the internet" - you have access through installed skills.',
-  '- Available method: use the installed playwright/browser skill to navigate to URLs and extract content.',
+  '- Available methods: use the installed Browser in-app browser or Chrome skill to navigate to URLs and extract content. For Google searches, also available via built-in web search tool.',
   '- Simply describe what to do - the system will handle the browser automation.',
   '- If a search attempt fails, try at least once more before saying it cannot be done.',
   '- After getting results, analyze them and present a clear summary to the user.',

@@ -154,8 +154,8 @@ interface WeixinBridgeRuntimeOptions {
 
 export class WeixinBridgeRuntime {
   static readonly NOTICE_COOLDOWN_MS = 30_000;
-  static readonly DEFAULT_TYPING_KEEPALIVE_MS = 8_000;
-  static readonly PREVIEW_MIN_TARGET_BYTES = 500;
+  static readonly DEFAULT_TYPING_KEEPALIVE_MS = 4_000;
+  static readonly PREVIEW_MIN_TARGET_BYTES = 200;
   static readonly AUTOMATION_RATE_LIMIT_RETRY_MS = 10 * 60 * 1000;
   static readonly DELIVERY_SESSION_EXPIRED_RETRY_MS = 60 * 1000;
 
@@ -229,9 +229,9 @@ export class WeixinBridgeRuntime {
     agentJobs = null,
     assistantRecords = null,
     onError = async () => {},
-    previewSoftTargetBytes = 2048,
-    previewHardLimitBytes = 2048,
-    previewIntervalMs = 3000,
+    previewSoftTargetBytes = 800,
+    previewHardLimitBytes = 1200,
+    previewIntervalMs = 1500,
     typingKeepaliveMs = WeixinBridgeRuntime.DEFAULT_TYPING_KEEPALIVE_MS,
     inboundAttachmentMergeWindowMs = 3000,
     automationPollMs = 30_000,
@@ -383,8 +383,7 @@ export class WeixinBridgeRuntime {
     // Send welcome message on first interaction
     if (!this.welcomeSent && scopeId) {
       this.welcomeSent = true;
-      const uptime = Math.floor((Date.now() - this.startTime) / 1000);
-      this.sendFastReply(scopeId, "桥接已连接（运行 " + uptime + " 秒）。消息在桌面 Codex 处理。");
+      this.sendFastReply(scopeId, "桥接已连接，可正常对话。");
     }
 
     // Fast commands handled at bridge level, not passed to Codex

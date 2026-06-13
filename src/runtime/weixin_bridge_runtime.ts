@@ -364,6 +364,11 @@ export class WeixinBridgeRuntime {
     '继续': 'resume',
     '恢复': 'resume',
     '健康': 'health',
+    '关闭': 'shutdown',
+    '退出': 'shutdown',
+    '任务': 'tasks',
+    '列表': 'tasks',
+
 
   };
 
@@ -483,15 +488,37 @@ export class WeixinBridgeRuntime {
         })();
         return { type: "scheduled", completion: searchPromise };
       }
+      if (cmd.name === "shutdown") {
+        this.sendFastReply(scopeId, "正在关闭桥接...");
+        this.scopeChains.delete(scopeId);
+        setTimeout(() => process.exit(0), 500);
+        return undefined;
+      }
+      if (cmd.name === "tasks") {
+        const chainCount = this.scopeChains.size;
+        const mergeCount = this.pendingInboundMerges.size;
+        const pendingCount = this.backgroundTasks.size;
+        const lines = [
+          "当前任务",
+          "---",
+          "处理中: " + chainCount + " 个",
+          "排队中: " + mergeCount + " 个",
+          "后台: " + pendingCount + " 个",
+        ];
+        this.sendFastReply(scopeId, lines.join("\n"));
+        return undefined;
+      }
       if (cmd.name === "helps") {
         const helps = [
           "CodexBridge 微信命令",
+          "停止/中断 - 停止当前处理",
           "状态 - 桥接运行状态",
           "健康 - 完整链路诊断",
-          "暂停 - 暂停消息处理",
-          "继续/恢复 - 恢复处理",
+          "暂停/继续 - 暂停/恢复处理",
+          "任务 - 查看当前任务",
           "新对话 - 开启新会话",
-          "模型 - 查看当前模型",
+          "搜索 - 联网搜索",
+          "关闭/退出 - 关闭桥接",
           "帮助 - 显示本帮助",
         ];
         this.sendFastReply(scopeId, helps.join("\n"));

@@ -21,3 +21,6 @@ bridge-runner.sh
 
 # 媒体下载
 weixin/inbound/
+*.bak
+_*.py
+_MEMORY_HEAD*

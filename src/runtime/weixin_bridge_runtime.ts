@@ -376,10 +376,21 @@ export class WeixinBridgeRuntime {
       return undefined;
     }
     let eventText = String(event?.text ?? '');
-    // Check for Chinese command aliases
+    // Check for Chinese command aliases (prefix match, longer alias wins)
     const trimmedText = eventText.trim();
-    if (trimmedText in WeixinBridgeRuntime.COMMAND_ALIASES) {
-      eventText = '/' + WeixinBridgeRuntime.COMMAND_ALIASES[trimmedText];
+    let matchedAlias = null;
+    let matchedCmd = null;
+    for (const [alias, cmd] of Object.entries(WeixinBridgeRuntime.COMMAND_ALIASES)) {
+      if (trimmedText === alias || trimmedText.startsWith(alias + ' ') || trimmedText.startsWith(alias)) {
+        if (!matchedAlias || alias.length > matchedAlias.length) {
+          matchedAlias = alias;
+          matchedCmd = cmd;
+        }
+      }
+    }
+    if (matchedAlias) {
+      const rest = trimmedText.slice(matchedAlias.length).trim();
+      eventText = '/' + matchedCmd + (rest ? ' ' + rest : '');
       event = { ...event, text: eventText };
     }
     const scopeId = String(event?.externalScopeId ?? "");

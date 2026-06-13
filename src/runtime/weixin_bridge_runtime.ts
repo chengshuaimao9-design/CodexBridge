@@ -2221,6 +2221,10 @@ function extractImmediatePreviewChunk(text: string, hardLimitBytes: number): str
   if (boundary > 0) {
     return text.slice(0, boundary);
   }
+  // No sentence boundary: send what we have if it's non-empty and within hard limit
+  if (text && utf8ByteLength(text) <= hardLimitBytes) {
+    return text;
+  }
   return '';
 }
 

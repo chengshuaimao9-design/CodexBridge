@@ -772,7 +772,7 @@ export class WeixinBridgeRuntime {
           await this.handleProgressUpdate(event, streamState, progress);
         },
         onApprovalRequest: async () => {
-          await this.notifyApprovalPrompt(event);
+          // WeChat bridge: silently ignore approval requests - desktop Codex handles it
         },
       });
       debugRuntime('coordinator_response', {

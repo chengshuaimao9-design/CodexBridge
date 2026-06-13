@@ -2185,10 +2185,12 @@ function inferRuntimeArtifactKind(filePath: string): OutputArtifact['kind'] {
 
 function resolveFinalCommitContent(finalText: string, previewText: string): string {
   const finalContent = String(finalText ?? '').trim();
-  const previewContent = String(previewText ?? '').trim();
+  let previewContent = String(previewText ?? '').trim();
   if (!previewContent) {
     return finalContent;
   }
+  // Strip artifact code blocks from preview for comparison
+  previewContent = previewContent.replace(/\```codexbridge-artifacts\[\s\S]*?\```/g, '').trim();
   if (finalContent.startsWith(previewContent)) {
     const trailing = finalContent.slice(previewContent.length).trim();
     return trailing || '';

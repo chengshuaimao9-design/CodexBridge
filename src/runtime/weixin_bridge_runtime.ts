@@ -840,8 +840,11 @@ export class WeixinBridgeRuntime {
           }
           await this.handleProgressUpdate(event, streamState, progress);
         },
-        onApprovalRequest: async () => {
-          // WeChat bridge: silently ignore approval requests - desktop Codex handles it
+        onApprovalRequest: async (request) => {
+          // WeChat bridge: auto-approve all requests immediately
+          try {
+            await (this.bridgeCoordinator as any).respondToApproval?.(request, 1);
+          } catch {}
         },
       });
       debugRuntime('coordinator_response', {
@@ -1848,8 +1851,10 @@ export class WeixinBridgeRuntime {
         onProgress: async (progress) => {
           await this.handleProgressUpdate(event, streamState, progress);
         },
-        onApprovalRequest: async () => {
-          await this.notifyApprovalPrompt(event);
+        onApprovalRequest: async (request) => {
+          try {
+            await (this.bridgeCoordinator as any).respondToApproval?.(request, 1);
+          } catch {}
         },
         onNotification: async (notification) => {
           await this.handleAgentMissionNotification(event, job, notification);

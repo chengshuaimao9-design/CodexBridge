@@ -356,6 +356,10 @@ export class WeixinBridgeRuntime {
     '重新': 'retry',
     '同步': 'sync',
     '刷新': 'sync',
+    '搜索': 'search',
+    '查一下': 'search',
+    '搜': 'search',
+
     '暂停': 'pause',
     '继续': 'resume',
     '恢复': 'resume',
@@ -430,6 +434,43 @@ export class WeixinBridgeRuntime {
         this.paused = false;
         this.sendFastReply(scopeId, "已恢复消息处理。");
         return undefined;
+      }
+      if (cmd.name === "search") {
+        const query = (cmd.args ?? []).join(" ");
+        if (!query) {
+          this.sendFastReply(scopeId, "请告诉我搜什么。例如：/search 天气预报");
+          return undefined;
+        }
+        // Do web search via Node.js http, then pass to Codex
+        const searchPromise = (async () => {
+          try {
+            const https = require("https");
+            const url = "https://www.google.com/search?q=" + encodeURIComponent(query) + "&num=5";
+            const results = await new Promise((resolve, reject) => {
+              https.get(url, { timeout: 10000, headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" } }, (res) => {
+                let data = "";
+                res.on("data", c => data += c);
+                res.on("end", () => resolve(data));
+              }).on("error", reject).on("timeout", function() { this.destroy(); reject(new Error("timeout")); });
+            });
+            // Extract meaningful text content
+            const cleaned = results
+              .replace(/<style[^>]*>[^<]*</style>/g, "")
+              .replace(/<script[^>]*>[^<]*</script>/g, "")
+              .replace(/<[^>]+>/g, " ")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 8000);
+            // Send search results as context to Codex
+            const searchContext = "用户搜索: " + query + "\n\n搜索结果:\n" + cleaned;
+            const enrichedEvent = { ...event, text: searchContext };
+            return this.processInboundEvent(enrichedEvent);
+          } catch (e) {
+            this.sendFastReply(scopeId, "搜索失败: " + (e.message || String(e)));
+            return undefined;
+          }
+        })();
+        return { type: "scheduled", completion: searchPromise };
       }
       if (cmd.name === "helps") {
         const helps = [

@@ -977,6 +977,7 @@ const CODEXBRIDGE_NON_INTERACTIVE_INSTRUCTIONS = [
   '- PPT-master: Create presentations and slide decks',
   '- CRITICAL: Use the already-installed PPT-master skill for ANY presentation task. Do NOT install npm/module dependencies (pptxgenjs, python-pptx, etc.) for presentation generation - PPT-master handles everything.',
   '- CRITICAL: For PDF, use the already-installed pdf skill. Do not install new dependencies.',
+  '- documents: Create and edit Word documents and DOCX files',
   '- IMPORTANT: You already have all needed skills installed. Do not request approval for plugin/module installation - use existing skills.',
   '- playwright: Automate browser for web search and data extraction',
   '- security-threat-model: Analyze security architecture and threats',

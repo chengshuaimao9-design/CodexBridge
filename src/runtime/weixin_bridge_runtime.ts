@@ -3,6 +3,8 @@ import { isAgentCommandEnabled } from '../core/command_availability.js';
 import { writeSequencedDebugLog } from '../core/sequenced_stderr.js';
 import { WeixinPoller } from '../platforms/weixin/poller.js';
 import { createI18n, type Translator } from '../i18n/index.js';
+import path from 'node:path';
+import fs from 'node:fs';
 import type { MissionHostNotification } from '../../packages/mission-control/src/index.js';
 import type {
   InboundTextEvent,
@@ -363,6 +365,10 @@ export class WeixinBridgeRuntime {
     '健康': 'health',
     '关闭': 'shutdown',
     '退出': 'shutdown',
+    '发送': 'send',
+    '发文件': 'send',
+    '发送文件': 'send',
+
     '任务': 'tasks',
     '列表': 'tasks',
 
@@ -484,6 +490,47 @@ export class WeixinBridgeRuntime {
           }
         })();
         return { type: "scheduled", completion: searchPromise };
+      }
+      if (cmd.name === "send" || cmd.name === "file") {
+        const fileArg = (cmd.args ?? []).join(" ");
+        if (!fileArg) {
+          this.sendFastReply(scopeId, "用法：/send 文件名 或 发文件 文件名");
+          return undefined;
+        }
+        const searchPaths = [
+          path.join(process.env.HOME || "", "Desktop", "Githup", "微信端运营", "生成的文件"),
+          path.join(process.env.HOME || "", "Desktop", "Githup", "codex运行项目", "CodexBridge"),
+          process.cwd(),
+        ];
+        let foundPath = null;
+        for (const dir of searchPaths) {
+          const fullPath = path.join(dir, fileArg);
+          try {
+            if (fs.existsSync(fullPath)) {
+              foundPath = fullPath;
+              break;
+            }
+          } catch {}
+        }
+        if (!foundPath) {
+          this.sendFastReply(scopeId, "没找到文件: " + fileArg + "。试试完整路径。");
+          return undefined;
+        }
+        this.sendFastReply(scopeId, "正在发送文件...");
+        const sendPromise = this.sendMediaWithRetry({
+          externalScopeId: scopeId,
+          filePath: foundPath,
+          caption: "文件: " + path.basename(foundPath),
+        }).then(result => {
+          if (result && result.success) {
+            this.sendFastReply(scopeId, "文件已发送: " + path.basename(foundPath));
+          } else {
+            this.sendFastReply(scopeId, "发送失败");
+          }
+        }).catch(() => {
+          this.sendFastReply(scopeId, "发送失败");
+        });
+        return { type: "scheduled", completion: sendPromise };
       }
       if (cmd.name === "shutdown") {
         this.sendFastReply(scopeId, "正在关闭桥接...");

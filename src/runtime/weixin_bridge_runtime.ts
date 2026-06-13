@@ -492,45 +492,67 @@ export class WeixinBridgeRuntime {
         return { type: "scheduled", completion: searchPromise };
       }
       if (cmd.name === "send" || cmd.name === "file") {
-        const fileArg = (cmd.args ?? []).join(" ");
+        const fileArg = (cmd.args ?? []).join(" ").trim();
+        const searchDirs = [
+          path.join(process.env.HOME || "", "Desktop", "Githup", "微信端运营", "生成的文件"),
+          path.join(process.env.HOME || "", "Desktop", "Githup", "codex运行项目", "CodexBridge", "bridge_data", "files"),
+        ];
+        // If no filename specified, find the newest file
         if (!fileArg) {
-          this.sendFastReply(scopeId, "用法：/send 文件名 或 发文件 文件名");
+          let newestFile = null;
+          let newestTime = 0;
+          for (const dir of searchDirs) {
+            try {
+              const files = fs.readdirSync(dir);
+              for (const f of files) {
+                const full = path.join(dir, f);
+                try {
+                  const stat = fs.statSync(full);
+                  if (stat.isFile() && stat.mtimeMs > newestTime) {
+                    newestFile = full;
+                    newestTime = stat.mtimeMs;
+                  }
+                } catch {}
+              }
+            } catch {}
+          }
+          if (newestFile) {
+            this.sendFastReply(scopeId, "找到最新文件，正在发送...");
+            const promise = this.sendMediaWithRetry({
+              externalScopeId: scopeId,
+              filePath: newestFile,
+              caption: "文件: " + path.basename(newestFile),
+            }).then(r => {
+              if (r && r.success) this.sendFastReply(scopeId, "文件已发送");
+              else this.sendFastReply(scopeId, "发送失败");
+            }).catch(() => this.sendFastReply(scopeId, "发送失败"));
+            return { type: "scheduled", completion: promise };
+          }
+          this.sendFastReply(scopeId, "没找到可发送的文件。生成文件后再说"发文件"就行。");
           return undefined;
         }
-        const searchPaths = [
-          path.join(process.env.HOME || "", "Desktop", "Githup", "微信端运营", "生成的文件"),
-          path.join(process.env.HOME || "", "Desktop", "Githup", "codex运行项目", "CodexBridge"),
-          process.cwd(),
-        ];
+        // Specific filename - search in output directories
         let foundPath = null;
-        for (const dir of searchPaths) {
+        for (const dir of searchDirs) {
           const fullPath = path.join(dir, fileArg);
           try {
-            if (fs.existsSync(fullPath)) {
-              foundPath = fullPath;
-              break;
-            }
+            if (fs.existsSync(fullPath)) { foundPath = fullPath; break; }
           } catch {}
         }
         if (!foundPath) {
-          this.sendFastReply(scopeId, "没找到文件: " + fileArg + "。试试完整路径。");
+          this.sendFastReply(scopeId, "没找到: " + fileArg);
           return undefined;
         }
         this.sendFastReply(scopeId, "正在发送文件...");
-        const sendPromise = this.sendMediaWithRetry({
+        const promise = this.sendMediaWithRetry({
           externalScopeId: scopeId,
           filePath: foundPath,
           caption: "文件: " + path.basename(foundPath),
-        }).then(result => {
-          if (result && result.success) {
-            this.sendFastReply(scopeId, "文件已发送: " + path.basename(foundPath));
-          } else {
-            this.sendFastReply(scopeId, "发送失败");
-          }
-        }).catch(() => {
-          this.sendFastReply(scopeId, "发送失败");
-        });
-        return { type: "scheduled", completion: sendPromise };
+        }).then(r => {
+          if (r && r.success) this.sendFastReply(scopeId, "文件已发送");
+          else this.sendFastReply(scopeId, "发送失败");
+        }).catch(() => this.sendFastReply(scopeId, "发送失败"));
+        return { type: "scheduled", completion: promise };
       }
       if (cmd.name === "shutdown") {
         this.sendFastReply(scopeId, "正在关闭桥接...");

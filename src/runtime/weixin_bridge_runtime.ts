@@ -471,8 +471,8 @@ export class WeixinBridgeRuntime {
             });
             // Extract meaningful text content
             const cleaned = results
-              .replace(/<style[^>]*>[^<]*</style>/g, "")
-              .replace(/<script[^>]*>[^<]*</script>/g, "")
+              .replace(new RegExp('<style[^>]*>[^<]*<\\/style>', 'g'), "")
+              .replace(new RegExp('<script[^>]*>[^<]*<\\/script>', 'g'), "")
               .replace(/<[^>]+>/g, " ")
               .replace(/\s+/g, " ")
               .trim()

@@ -103,23 +103,17 @@ export class WeixinPoller {
         });
         this.ensureCommitPump();
       } catch (error) {
-        // Timeout errors are normal in long-polling; don't count as failures
-        const isTimeout = (error as NodeJS.ErrnoException)?.code === 'ETIMEDOUT';
-        if (!isTimeout) {
-          this.consecutiveErrors += 1;
-        }
+        this.consecutiveErrors += 1;
         await this.onError(error);
-        // Use shorter backoff for timeouts (normal long-poll behavior)
-        let backoffMs = isTimeout
-          ? 500  // Timeout: just retry quickly
-          : Math.min(2000 * Math.pow(2, this.consecutiveErrors - 1), 30000);
-        // After maxConsecutiveErrors/2 failures, add jitter
-        if (!isTimeout && this.consecutiveErrors > this.maxConsecutiveErrors / 2) {
+        // Exponential backoff with circuit breaker: 2s, 4s, 8s, 16s, 30s, then stay at 30s
+        let backoffMs = Math.min(2000 * Math.pow(2, this.consecutiveErrors - 1), 30000);
+        // After maxConsecutiveErrors/2 failures, add jitter to prevent thundering herd
+        if (this.consecutiveErrors > this.maxConsecutiveErrors / 2) {
           backoffMs += Math.floor(Math.random() * 5000);
         }
         await this.sleep(backoffMs);
-        // Notify on first loss and periodically after that (skip for timeouts - they're normal)
-        if (!isTimeout && (this.consecutiveErrors === 1 || this.consecutiveErrors % this.maxConsecutiveErrors === 0)) {
+        // Notify on first loss and periodically after that
+        if (this.consecutiveErrors === 1 || this.consecutiveErrors % this.maxConsecutiveErrors === 0) {
           await this.onConnectionLost();
         }
       }

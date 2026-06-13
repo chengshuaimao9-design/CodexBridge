@@ -356,9 +356,6 @@ export class WeixinBridgeRuntime {
     '重新': 'retry',
     '同步': 'sync',
     '刷新': 'sync',
-    '搜索': 'search',
-    '查一下': 'search',
-    '搜': 'search',
 
     '暂停': 'pause',
     '继续': 'resume',

@@ -112,14 +112,14 @@ export class WeixinPoller {
         // Use shorter backoff for timeouts (normal long-poll behavior)
         let backoffMs = isTimeout
           ? 500  // Timeout: just retry quickly
-          : Math.min(2000 * Math.pow(2, this.consecutiveErrors - 1), 30000);
+          : Math.min(2000 * Math.pow(2, this.consecutiveErrors - 1), 10000);
         // After maxConsecutiveErrors/2 failures, add jitter
         if (!isTimeout && this.consecutiveErrors > this.maxConsecutiveErrors / 2) {
           backoffMs += Math.floor(Math.random() * 5000);
         }
         await this.sleep(backoffMs);
-        // Notify on first loss and periodically after that (skip for timeouts - they're normal)
-        if (!isTimeout && (this.consecutiveErrors === 1 || this.consecutiveErrors % this.maxConsecutiveErrors === 0)) {
+        // Notify on every error so the runtime can attempt immediate reconnection (skip timeouts)
+        if (!isTimeout && this.consecutiveErrors >= 1) {
           await this.onConnectionLost();
         }
       }

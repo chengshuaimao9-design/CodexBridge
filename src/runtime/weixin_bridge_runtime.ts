@@ -190,8 +190,11 @@ export class WeixinBridgeRuntime {
   /** Track last reconnect attempt to avoid rapid restart loops */
   lastReconnectAt: number;
 
+  /** Track consecutive reconnect failures to trigger watchdog restart */
+  reconnectFailures: number;
+
   /** Minimum interval between automatic reconnection attempts */
-  static readonly RECONNECT_COOLDOWN_MS = 60_000;
+  static readonly RECONNECT_COOLDOWN_MS = 10_000;
 
   backgroundTasks: Set<Promise<RuntimeResponse>>;
 
@@ -260,6 +263,7 @@ export class WeixinBridgeRuntime {
 
     this.poller = null;
     this.lastReconnectAt = 0;
+    this.reconnectFailures = 0;
     this.backgroundTasks = new Set();
     this.scheduledAgentJobIds = new Set();
     this.scheduledAssistantReminderIds = new Set();
@@ -299,13 +303,21 @@ export class WeixinBridgeRuntime {
           try {
             await this.platformPlugin.stop();
             await this.platformPlugin.start();
+            this.reconnectFailures = 0;
             debugRuntime("connection_reconnect_ok", { at: Date.now() });
           } catch (err) {
-            debugRuntime("connection_reconnect_fail", { at: Date.now(), error: String(err) });
+            this.reconnectFailures += 1;
+            debugRuntime("connection_reconnect_fail", { at: Date.now(), error: String(err), failures: this.reconnectFailures });
+            if (this.reconnectFailures >= 3) {
+              debugRuntime("connection_reconnect_giveup", { at: Date.now() });
+              // Exit to trigger watchdog restart for a completely clean state
+              process.exit(1);
+            }
           }
         }
       },
       onConnectionRestored: async () => {
+        this.reconnectFailures = 0;
         debugRuntime("connection_restored", { at: Date.now() });
       },
     } as any);
@@ -473,7 +485,7 @@ export class WeixinBridgeRuntime {
               }).on("error", reject).on("timeout", function() { this.destroy(); reject(new Error("timeout")); });
             });
             // Extract meaningful text content
-            const cleaned = results
+            const cleaned = String(results)
               .replace(new RegExp('<style[^>]*>[^<]*<\\/style>', 'g'), "")
               .replace(new RegExp('<script[^>]*>[^<]*<\\/script>', 'g'), "")
               .replace(/<[^>]+>/g, " ")
@@ -528,7 +540,7 @@ export class WeixinBridgeRuntime {
             }).catch(() => this.sendFastReply(scopeId, "发送失败"));
             return { type: "scheduled", completion: promise };
           }
-          this.sendFastReply(scopeId, "没找到可发送的文件。生成文件后再说"发文件"就行。");
+          this.sendFastReply(scopeId, "没找到可发送的文件。生成文件后再说「发文件」就行。");
           return undefined;
         }
         // Specific filename - search in output directories

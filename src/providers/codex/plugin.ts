@@ -870,15 +870,9 @@ function buildCodexTurnInput(event: InboundTextEvent, inputText: string): CodexT
     text: textPrompt,
     text_elements: [],
   }];
-  for (const attachment of attachments) {
-    if (attachment.kind !== 'image') {
-      continue;
-    }
-    input.push({
-      type: 'localImage',
-      path: attachment.localPath,
-    });
-  }
+  // NOTE: 微信图片仅以文本描述+路径传递，不推 localImage 类型。
+  //       当前模型 gpt-5.4 不支持 image_url 内容类型，
+  //       Codex 仍可根据文本中的文件路径读取图片。
   return input;
 }
 

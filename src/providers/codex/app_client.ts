@@ -706,7 +706,7 @@ export class CodexAppClient extends EventEmitter {
     onProgress = null,
     onTurnStarted = null,
     onApprovalRequest = null,
-    timeoutMs = 15 * 60 * 1000,
+    timeoutMs = 8 * 60 * 1000,
   }: {
     threadId: string;
     inputText: string;

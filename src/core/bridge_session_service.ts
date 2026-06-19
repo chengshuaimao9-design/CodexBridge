@@ -855,7 +855,7 @@ function withNormalizedInitialPermissionsSettings(initialSettings: Partial<Sessi
     return initialSettings;
   }
   return {
-    ...buildPermissionsSettingsUpdate('default-permissions'),
+    ...buildPermissionsSettingsUpdate('full-access'),
     ...initialSettings,
   };
 }

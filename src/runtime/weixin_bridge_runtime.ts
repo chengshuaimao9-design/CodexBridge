@@ -161,6 +161,31 @@ export class WeixinBridgeRuntime {
   static readonly AUTOMATION_RATE_LIMIT_RETRY_MS = 10 * 60 * 1000;
   static readonly DELIVERY_SESSION_EXPIRED_RETRY_MS = 60 * 1000;
 
+  // ==================== 快捷指令模板 ====================
+  static readonly COMMAND_TEMPLATES: Record<string, string> = {
+    '调研': '请搜索关于"%s"的资料，整理成调研报告：核心要点、市场概况、竞争分析、趋势。生成文档。',
+    'research': '请搜索关于"%s"的资料，整理成调研报告：核心要点、市场概况、竞争分析、趋势。生成文档。',
+    '总结': '请总结以下内容：%s。要求：核心观点、关键数据、结论。',
+    'summary': '请总结以下内容：%s。要求：核心观点、关键数据、结论。',
+    '翻译': '请翻译成中文：%s',
+    'translate': '请翻译成中文：%s',
+    '写': '请写一篇文章，主题：%s。结构清晰、内容详实。',
+    'write': '请写一篇文章，主题：%s。结构清晰、内容详实。',
+    '代码': '请写代码，需求：%s。完整、有注释、可运行。',
+    'code': '请写代码，需求：%s。完整、有注释、可运行。',
+    '方案': '请制定方案：%s。目标明确、步骤清晰、可执行。',
+    'plan': '请制定方案：%s。目标明确、步骤清晰、可执行。',
+  };
+
+  expandCommandTemplate(text: string): string {
+    const m = text.match(/^\/(\S+)\s+(.+)/);
+    if (!m) return text;
+    const t = WeixinBridgeRuntime.COMMAND_TEMPLATES[m[1].toLowerCase()];
+    if (!t) return text;
+    return t.replace('%s', m[2].trim());
+  }
+
+
   platformPlugin: PlatformPluginLike;
 
   bridgeCoordinator: BridgeCoordinatorLike;
@@ -845,6 +870,10 @@ export class WeixinBridgeRuntime {
       ? async () => {}
       : this.startTypingKeepalive(event.externalScopeId);
     try {
+      // 快捷指令模板展开
+      event.text = this.expandCommandTemplate(String(event.text ?? ""));
+      // 多轮对话引导
+      this.enrichEventWithTurnContext(event);
       const response = await this.bridgeCoordinator.handleInboundEvent(event, {
         onProgress: async (progress) => {
           if (options.suppressProgressDelivery) {
@@ -945,6 +974,10 @@ export class WeixinBridgeRuntime {
       }
       if (artifactMessages.length > 0) {
         await this.deliverArtifactMessages(event, artifactMessages);
+      }
+      // 文件自动回传：Codex 完成后检测输出目录
+      if (artifactMessages.length === 0 && !options.deferPostResponseAction) {
+        await this.autoSendGeneratedFile(event);
       }
       if (!options.deferPostResponseAction) {
         await this.runPostResponseAction(response, event);
@@ -1307,16 +1340,50 @@ export class WeixinBridgeRuntime {
     const normalized = String(errorMessage ?? '').trim();
     const detail = normalized.replace(/[。.!！]+$/u, '');
     if (/subscription credits are exhausted/i.test(normalized)) {
-      return this.i18n.t('runtime.error.codexCreditsExhausted', {
-        detail,
-      });
+      return this.i18n.t('runtime.error.codexCreditsExhausted', { detail });
     }
     if (/usage limit reached/i.test(normalized)) {
-      return this.i18n.t('runtime.error.codexUsageLimitReached', {
-        detail,
-      });
+      return this.i18n.t('runtime.error.codexUsageLimitReached', { detail });
     }
-    return this.i18n.t('runtime.error.codex', { error: normalized });
+    if (/timed out waiting|timeout/i.test(normalized) && !/usage limit|subscription/i.test(normalized)) {
+      if (/Codex turn/i.test(normalized)) { return '回复等待超时，可能是任务耗时太长。已自动重试，请稍候……'; }
+      return '请求超时，已自动重试。请稍候……';
+    }
+    if (/image_url/i.test(normalized)) { return '微信暂不支持发送图片给模型分析。本消息已跳过图片，以文字处理。'; }
+    if (/rate_limit|rate limit/i.test(normalized)) { return '请求频率过高，已自动减速重试。'; }
+    if (/network|ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|socket hang up|socket/i.test(normalized)) { return '网络连接不稳定，已自动重连。请稍候……'; }
+    if (/invalid_request_error.*unknown variant/i.test(normalized)) { return '收到不支持的消息类型，已自动跳过并继续处理。'; }
+    if (/deserialize/i.test(normalized)) { return '消息解析异常，已尝试重新处理。'; }
+    return '处理出错，已自动重试。如果持续失败，请发"新对话"后重试。';
+  }
+
+  // ==================== 多轮对话引导 ====================
+  enrichEventWithTurnContext(event: any): void {
+    try {
+      if (!event || !event.text) return;
+      const t = String(event.text ?? '');
+      if (t.startsWith('/') || t.startsWith('。') || t.startsWith('！') || t.startsWith('？')) return;
+      if (/^(好的|可以|行|嗯|ok|谢谢|好|是|对|不|知道|明白|收到|在吗|在|你好|嗨|hi|hello|测试|test)$/i.test(t.trim())) return;
+      event._bridgeTurnContext = true;
+    } catch {}
+  }
+
+  // ==================== 文件自动回传 ====================
+  async autoSendGeneratedFile(event: any): Promise<void> {
+    try {
+      const scopeId = event?.externalScopeId;
+      if (!scopeId) return;
+      const home = process.env.HOME || '';
+      const dir = path.join(home, 'Desktop', 'Githup', '微信端运营', '生成的文件');
+      const now = Date.now();
+      const files = fs.readdirSync(dir).filter(f => {
+        try { const s = fs.statSync(path.join(dir, f)); return s.isFile() && s.size > 0 && (now - s.mtimeMs) < 60000; }
+        catch { return false; }
+      });
+      if (files.length === 0) return;
+      const latest = files.sort((a, b) => fs.statSync(path.join(dir, b)).mtimeMs - fs.statSync(path.join(dir, a)).mtimeMs)[0];
+      await this.sendMediaWithRetry({ externalScopeId: scopeId, filePath: path.join(dir, latest), caption: latest });
+    } catch {}
   }
 
   async safeSendTyping(externalScopeId: string, status: 'start' | 'stop'): Promise<void> {

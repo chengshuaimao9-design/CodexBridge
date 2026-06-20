@@ -634,6 +634,23 @@ export class WeixinBridgeRuntime {
       this.sendFastReply(scopeId, "已暂停，发 /resume 恢复。");
       return undefined;
     }
+    // ==================== 自然语言拦截器 ====================
+    const nlText = String(event?.text ?? '').trim();
+    // 1. 任务状态查询：发"那个调研怎么样了"等
+    if (/怎么样了|进度|完成了吗|好了没|好了吗|结果呢|结果如何|跑到哪|到哪了|状态$/u.test(nlText) && nlText.length < 30 && !nlText.startsWith('/')) {
+      try {
+        const statusText = await this.queryTaskStatus(scopeId);
+        this.sendFastReply(scopeId, statusText);
+      } catch { this.sendFastReply(scopeId, '当前没有进行中的任务。'); }
+      return undefined;
+    }
+    // 2. 模糊文件发送：发"把那个文件发给我""把调研报告发给我"等
+    if (/^把.+发[给到]?我/u.test(nlText) || /^文件.+发/u.test(nlText) || /^发.+文件/u.test(nlText) || /^把.+文件/u.test(nlText)) {
+      const keywords = nlText.replace(/^(把|发[给到]?我|文件)/ug, '').trim();
+      void this.fuzzySearchAndSendFile(scopeId, keywords);
+      this.sendFastReply(scopeId, '正在搜索文件…');
+      return undefined;
+    }
     const command = parseSlashCommand(String(event?.text ?? ''));
     if (command) {
       await this.flushPendingInboundMerge(event.externalScopeId);
@@ -1384,6 +1401,75 @@ export class WeixinBridgeRuntime {
       const latest = files.sort((a, b) => fs.statSync(path.join(dir, b)).mtimeMs - fs.statSync(path.join(dir, a)).mtimeMs)[0];
       await this.sendMediaWithRetry({ externalScopeId: scopeId, filePath: path.join(dir, latest), caption: latest });
     } catch {}
+  }
+
+  // ==================== 任务状态查询 ====================
+  async queryTaskStatus(scopeId: string): Promise<string> {
+    try {
+      const active = (this.bridgeCoordinator as any)?.activeTurns?.resolveScopeTurn({ platform: 'weixin', externalScopeId: scopeId });
+      if (active) {
+        return `当前有任务在处理中。${active.turnId ? '可通过发"停止"中断。' : ''}`;
+      }
+      const stats = (this.bridgeCoordinator as any)?.getUsageStats?.() ?? null;
+      if (stats) {
+        return `当前没有活跃任务。
+模型: ${stats.model || 'gpt-5.4'}
+线程: ${stats.threadId || '-'}`;
+      }
+    } catch {}
+    return '桥接运行正常，当前无进行中的任务。';
+  }
+
+  // ==================== 模糊文件搜索 ====================
+  async fuzzySearchAndSendFile(scopeId: string, keywords: string): Promise<void> {
+    try {
+      const home = process.env.HOME || '';
+      const searchDirs = [
+        path.join(home, 'Desktop'),
+        path.join(home, 'Downloads'),
+        path.join(home, 'Documents'),
+        path.join(home, 'Desktop', 'Githup', '微信端运营', '生成的文件'),
+        path.join(home, 'Desktop', 'Githup', 'codex运行项目', 'CodexBridge', 'bridge_data', 'files'),
+      ];
+      const keyword = keywords.toLowerCase();
+      const results: { path: string; mtime: number; score: number }[] = [];
+
+      for (const dir of searchDirs) {
+        try {
+          for (const f of fs.readdirSync(dir)) {
+            const full = path.join(dir, f);
+            try {
+              const stat = fs.statSync(full);
+              if (!stat.isFile() || stat.size === 0) continue;
+              const name = f.toLowerCase();
+              let score = 0;
+              if (!keyword || name.includes(keyword)) score += 2;
+              if (name.match(/\.(pdf|docx|doc|xlsx|pptx|txt|md|png|jpg|jpeg|gif)$/i)) score += 1;
+              // Recent files get higher score
+              const ageDays = (Date.now() - stat.mtimeMs) / 86400000;
+              if (ageDays < 1) score += 3;
+              else if (ageDays < 7) score += 2;
+              if (score > 0) results.push({ path: full, mtime: stat.mtimeMs, score });
+            } catch {}
+          }
+        } catch {}
+      }
+
+      if (results.length === 0) {
+        this.sendFastReply(scopeId, '没找到匹配的文件。文件名或描述更具体一些试试。');
+        return;
+      }
+
+      // Sort by score desc, then by mtime desc
+      results.sort((a, b) => b.score - a.score || b.mtime - a.mtime);
+      const best = results[0];
+      await this.sendMediaWithRetry({ externalScopeId: scopeId, filePath: best.path, caption: path.basename(best.path) });
+      if (results.length > 1) {
+        this.sendFastReply(scopeId, `已发送最新匹配文件。还有 ${results.length - 1} 个相关文件，如有需要请说具体些。`);
+      }
+    } catch {
+      this.sendFastReply(scopeId, '搜索文件出错。');
+    }
   }
 
   async safeSendTyping(externalScopeId: string, status: 'start' | 'stop'): Promise<void> {

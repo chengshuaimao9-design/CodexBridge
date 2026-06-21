@@ -1,4 +1,4 @@
-# CodexBridge launchd 服务
+# WeChatAgent launchd 服务
 
 桥接已注册为 macOS launchd 服务，不再依赖 `screen` + 看门狗脚本。
 
@@ -6,18 +6,18 @@
 
 ```bash
 # 启动（已配置开机自启，一般不需要手动操作）
-launchctl kickstart gui/502/com.codexbridge
+launchctl kickstart gui/502/com.wechat-agent
 
 # 停止
-launchctl bootout gui/502/com.codexbridge
+launchctl bootout gui/502/com.wechat-agent
 
 # 查看状态
-launchctl print gui/502/com.codexbridge
+launchctl print gui/502/com.wechat-agent
 ```
 
 ## 配置文件
 
-`~/Library/LaunchAgents/com.codexbridge.plist`
+`~/Library/LaunchAgents/com.wechat-agent.plist`
 
 ## 特性
 

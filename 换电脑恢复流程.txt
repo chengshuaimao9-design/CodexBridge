@@ -15,16 +15,16 @@
 打开终端（Launchpad → 其他 → 终端）
 粘贴以下命令回车：
 
-  git clone git@github.com:chengshuaimao9-design/CodexBridge.git ~/Desktop/CodexBridge
+  git clone git@github.com:chengshuaimao9-design/WeChatAgent.git ~/Desktop/WeChatAgent
 
-这会把项目下载到桌面上的 CodexBridge 文件夹
+这会把项目下载到桌面上的 WeChatAgent 文件夹
 
 ------------------------------------
 第三步：运行安装脚本
 ------------------------------------
 在终端里继续粘贴：
 
-  cd ~/Desktop/CodexBridge && bash setup.sh
+  cd ~/Desktop/WeChatAgent && bash setup.sh
 
 脚本会自动安装 Node.js、项目依赖、创建配置
 最后会显示一个二维码，用手机微信扫码登录
@@ -34,7 +34,7 @@
 ------------------------------------
 安装完成后，在终端里粘贴：
 
-  cd ~/Desktop/CodexBridge && bash bridge-runner.sh &
+  cd ~/Desktop/WeChatAgent && bash bridge-runner.sh &
 
 看到 "启动 WeChat bridge" 就说明成功了
 现在可以在手机微信上发消息了
@@ -42,7 +42,7 @@
 ------------------------------------
 日常使用命令
 ------------------------------------
-启动： cd ~/Desktop/CodexBridge && bash bridge-runner.sh &
+启动： cd ~/Desktop/WeChatAgent && bash bridge-runner.sh &
 停止： pkill -9 -f "node.*cli.ts.*weixin"
 
 微信上的命令：
@@ -57,7 +57,7 @@
 ------------------------------------
 把本地修改备份到 GitHub
 ------------------------------------
-  cd ~/Desktop/CodexBridge
+  cd ~/Desktop/WeChatAgent
   git add .
   git commit -m "备注你改了啥"
   git push origin main

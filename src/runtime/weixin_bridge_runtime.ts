@@ -443,7 +443,7 @@ export class WeixinBridgeRuntime {
     // Send welcome message on first interaction
     if (!this.welcomeSent && scopeId) {
       this.welcomeSent = true;
-      this.sendFastReply(scopeId, "桥接已连接，可正常对话。");
+      this.sendFastReply(scopeId, "老板我在，请吩咐。");
     }
 
     // Fast commands handled at bridge level, not passed to Codex

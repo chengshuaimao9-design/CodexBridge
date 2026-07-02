@@ -312,6 +312,7 @@ export class WeixinBridgeRuntime {
     }
     this.startAutomationScheduler();
     this.startInternalThreadCleanupScheduler();
+    this.startSessionKeepalive();
     this.poller = new WeixinPoller({
       plugin: this.platformPlugin,
       onEvent: async (event) => this.dispatchInboundEvent(event),
@@ -326,7 +327,8 @@ export class WeixinBridgeRuntime {
           this.lastReconnectAt = now;
           debugRuntime("connection_reconnect_start", { at: now });
           try {
-            await this.platformPlugin.stop();
+            this.stopSessionKeepalive();
+    await this.platformPlugin.stop();
             await this.platformPlugin.start();
             this.reconnectFailures = 0;
             debugRuntime("connection_reconnect_ok", { at: Date.now() });
@@ -356,6 +358,7 @@ export class WeixinBridgeRuntime {
     this.stopInternalThreadCleanupScheduler();
     await this.flushAllPendingInboundMerges();
     await this.waitForIdle();
+    this.stopSessionKeepalive();
     await this.platformPlugin.stop();
   }
 
@@ -1790,6 +1793,28 @@ export class WeixinBridgeRuntime {
     }
     clearInterval(this.automationSweepTimer);
     this.automationSweepTimer = null;
+  }
+
+  // ==================== 会话保持 ====================
+  // 每5分钟发一次静默ping，防止iLink Bot会话过期
+  sessionKeepaliveTimer: any = null;
+
+  startSessionKeepalive(): void {
+    this.stopSessionKeepalive();
+    this.sessionKeepaliveTimer = setInterval(async () => {
+      try {
+        await this.platformPlugin?.pollOnce?.({ syncCursor: null });
+      } catch {
+        // keepalive ping失败不处理，主轮询会处理
+      }
+    }, 5 * 60 * 1000);
+  }
+
+  stopSessionKeepalive(): void {
+    if (this.sessionKeepaliveTimer) {
+      clearInterval(this.sessionKeepaliveTimer);
+      this.sessionKeepaliveTimer = null;
+    }
   }
 
   startInternalThreadCleanupScheduler(): void {

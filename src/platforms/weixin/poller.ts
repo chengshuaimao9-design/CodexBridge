@@ -40,7 +40,7 @@ export class WeixinPoller {
     onConnectionRestored = async () => {},
     sleep = defaultSleep,
     maxConsecutiveErrors = 10,
-    healthCheckIntervalMs = 300_000,
+    healthCheckIntervalMs = 600_000,
   }: WeixinPollerOptions) {
     this.plugin = plugin;
     this.onEvent = onEvent;

@@ -19,8 +19,8 @@ import type {
 
 const ILINK_APP_ID = 'bot';
 const ILINK_APP_CLIENT_VERSION = (2 << 16) | (2 << 8) | 0;
-const DEFAULT_LONG_POLL_TIMEOUT_MS = 5_000; // Reduced for faster poll recovery
-const DEFAULT_API_TIMEOUT_MS = 15_000;
+const DEFAULT_LONG_POLL_TIMEOUT_MS = 20_000; // Longer poll = fewer timeouts = more stable
+const DEFAULT_API_TIMEOUT_MS = 30_000; // Increased for network stability
 const DEFAULT_CONFIG_TIMEOUT_MS = 10_000;
 const DEFAULT_CHANNEL_VERSION = '2.2.0';
 // Shared HTTPS agent with keepAlive for connection reuse

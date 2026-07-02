@@ -105,14 +105,19 @@ export class WeixinPoller {
       } catch (error) {
         // Timeout errors are normal in long-polling; don't count as failures
         const isTimeout = (error as NodeJS.ErrnoException)?.code === 'ETIMEDOUT';
+        const isDnsFailure = (error as NodeJS.ErrnoException)?.code === 'ENOTFOUND';
         if (!isTimeout) {
           this.consecutiveErrors += 1;
         }
         await this.onError(error);
-        // Use shorter backoff for timeouts (normal long-poll behavior)
-        let backoffMs = isTimeout
-          ? 500  // Timeout: just retry quickly
-          : Math.min(2000 * Math.pow(2, this.consecutiveErrors - 1), 10000);
+        // DNS failures: retry immediately (DNS can recover fast)
+        // Timeout: short backoff (normal long-poll behavior)
+        // Other errors: exponential backoff
+        let backoffMs = isDnsFailure
+          ? 200   // DNS failure: retry ASAP
+          : isTimeout
+            ? 500  // Timeout: just retry quickly
+            : Math.min(2000 * Math.pow(2, this.consecutiveErrors - 1), 10000);
         // After maxConsecutiveErrors/2 failures, add jitter
         if (!isTimeout && this.consecutiveErrors > this.maxConsecutiveErrors / 2) {
           backoffMs += Math.floor(Math.random() * 5000);

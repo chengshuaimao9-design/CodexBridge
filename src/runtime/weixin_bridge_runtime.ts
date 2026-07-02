@@ -1807,6 +1807,13 @@ export class WeixinBridgeRuntime {
       } catch {
         // keepalive ping失败不处理，主轮询会处理
       }
+      // 轻量检查：确认Codex CLI进程仍在（端口43182存活即可）
+      try {
+        const http = require("http");
+        const req = http.get("http://127.0.0.1:43182/health", { timeout: 3000 }, (res) => { res.resume(); });
+        req.on("error", () => { process.exit(1); });
+        req.end();
+      } catch {}
     }, 5 * 60 * 1000);
   }
 

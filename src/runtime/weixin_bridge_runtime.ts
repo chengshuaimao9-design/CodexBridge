@@ -1802,18 +1802,19 @@ export class WeixinBridgeRuntime {
   startSessionKeepalive(): void {
     this.stopSessionKeepalive();
     this.sessionKeepaliveTimer = setInterval(async () => {
-      try {
-        await this.platformPlugin?.pollOnce?.({ syncCursor: null });
-      } catch {
-        // keepalive ping失败不处理，主轮询会处理
-      }
-      // 轻量检查：确认Codex CLI进程仍在（端口43182存活即可）
+      // 仅做HTTP连接测试，不调用pollOnce（避免消息被误取）
       try {
         const http = require("http");
-        const req = http.get("http://127.0.0.1:43182/health", { timeout: 3000 }, (res) => { res.resume(); });
-        req.on("error", () => { process.exit(1); });
-        req.end();
-      } catch {}
+        // 1. 检查Codex CLI（端口43182）是否存活
+        const alive = await new Promise((resolve) => {
+          const req = http.get("http://127.0.0.1:43182/health", { timeout: 3000 }, () => resolve(true));
+          req.on("error", () => resolve(false));
+          req.end();
+        });
+        if (!alive) { process.exit(1); }
+      } catch {
+        // 保持静默，主轮询和onConnectionLost会处理
+      }
     }, 5 * 60 * 1000);
   }
 

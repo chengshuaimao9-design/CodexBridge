@@ -103,6 +103,9 @@ tail -f bridge_data/logs/stderr.log            # launchd stderr
 
 | 提交 | 说明 |
 |------|------|
+| `87d363a` | keepalive修复+语法修复 |
+| `9ebdb29` | DNS失败立即重试+Codex CLI健康检查 |
+| `1c51682` | 稳定性:长轮询5s→20s, API超时15s→30s, 会话保持ping |
 | `1c9668b` | 欢迎语改为"老板我在，请吩咐。" |
 | `4271fd2` | 项目改名 CodexBridge → WeChatAgent |
 | `5cfe95e` | 新增自然语言任务查询+模糊文件搜索 |
@@ -110,7 +113,6 @@ tail -f bridge_data/logs/stderr.log            # launchd stderr
 | `1205f42` | launchd 取代 screen+看门狗，解决休眠断连 |
 | `fc332c7` | 看门狗v2+断线重连优化+turn超时缩减+清理 |
 | `74590cf` | 审批请求自动批准 |
-| `e777a55` | 产品优化：shutdown/tasks命令+看门狗重启限制 |
 
 ---
 
@@ -126,17 +128,26 @@ tail -f bridge_data/logs/stderr.log            # launchd stderr
 - 每次错误都触发重连（不是每隔 10 次）
 - 连续 3 次重连失败 → 进程自退出 → launchd 干净重启
 
-### 3. 错误消息友好化
+### 3. 网络稳定性
+- 长轮询超时 5s→20s，减少假性断连
+- API 超时 15s→30s，网络波动更宽容
+- DNS 失败(ENOTFOUND) 200ms 立即重试，不等退避
+- 会话保持 ping 每 5 分钟，防止 iLink Bot 超期
+
+### 4. Codex CLI 健康检查
+- 每 5 分钟端口 43182 检测，不可达自动退出重启
+
+### 5. 错误消息友好化
 - 超时 → "回复等待超时，已自动重试"
 - 图片 → "微信暂不支持发送图片给模型分析"
 - 网络问题 → "网络连接不稳定，已自动重连"
 - JSON 反序列化 → 自动跳过并继续处理
 
-### 4. 文件自动回传
+### 6. 文件自动回传
 - Codex 生成文件后 60s 内自动检测并推送到微信
 - 支持模糊搜索：Desktop / Downloads / Documents / 输出目录
 
-### 5. 多轮对话引导
+### 7. 多轮对话引导
 - 新消息自动携带上下文标记，让 Codex 理解是补充/修改
 
 ---

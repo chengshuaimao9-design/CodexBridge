@@ -55,6 +55,7 @@ tail -f bridge_data/logs/stderr.log            # launchd stderr
 ```
 
 **launchd plist：** `~/Library/LaunchAgents/com.wechatagent.plist`
+**启动脚本：** `/tmp/wechat-agent-clean.sh`（launchd 无法直接执行中文路径，需复制到 /tmp）
 
 ---
 

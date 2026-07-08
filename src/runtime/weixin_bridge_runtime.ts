@@ -328,7 +328,7 @@ export class WeixinBridgeRuntime {
           debugRuntime("connection_reconnect_start", { at: now });
           try {
             this.stopSessionKeepalive();
-    await this.platformPlugin.stop();
+            await this.platformPlugin.stop();
             await this.platformPlugin.start();
             this.reconnectFailures = 0;
             debugRuntime("connection_reconnect_ok", { at: Date.now() });

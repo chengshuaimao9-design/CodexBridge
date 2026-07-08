@@ -331,6 +331,7 @@ export class WeixinBridgeRuntime {
             await this.platformPlugin.stop();
             await this.platformPlugin.start();
             this.reconnectFailures = 0;
+            this.startSessionKeepalive();
             debugRuntime("connection_reconnect_ok", { at: Date.now() });
           } catch (err) {
             this.reconnectFailures += 1;
@@ -352,6 +353,7 @@ export class WeixinBridgeRuntime {
   }
 
   async stop() {
+    this.cleanupStaleSessionFiles();
     this.poller?.stop();
     this.poller = null;
     this.stopAutomationScheduler();
@@ -1799,6 +1801,27 @@ export class WeixinBridgeRuntime {
   // 每5分钟发一次静默ping，防止iLink Bot会话过期
   sessionKeepaliveTimer: any = null;
 
+  // ==================== 会话文件清理 ====================
+  // 保留最近10个会话，防止session_settings.json无限增长
+  cleanupStaleSessionFiles(): void {
+    try {
+      const fs2 = require('fs');
+      const p2 = require('path');
+      const dir = p2.join(process.env.HOME || '', 'Desktop', 'Githup', '运行项目', 'CodexBridge', 'bridge_data', 'runtime');
+      for (const f of ['session_settings.json', 'bridge_sessions.json']) {
+        const fp = p2.join(dir, f);
+        try {
+          const data = JSON.parse(fs2.readFileSync(fp, 'utf8'));
+          if (Array.isArray(data) && data.length > 10) {
+            // 只保留最新的10个
+            const trimmed = data.slice(-10);
+            fs2.writeFileSync(fp, JSON.stringify(trimmed, null, 2));
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
   startSessionKeepalive(): void {
     this.stopSessionKeepalive();
     this.sessionKeepaliveTimer = setInterval(async () => {
@@ -1806,12 +1829,24 @@ export class WeixinBridgeRuntime {
       try {
         const http = require("http");
         // 1. 检查Codex CLI（端口43182）是否存活
-        const alive = await new Promise((resolve) => {
-          const req = http.get("http://127.0.0.1:43182/health", { timeout: 3000 }, () => resolve(true));
+        // 检查Codex CLI端口，连续2次不可达才退出（防止误杀）
+        const portAlive = await new Promise((resolve) => {
+          const req = http.get("http://127.0.0.1:43182/health", { timeout: 5000 }, () => resolve(true));
           req.on("error", () => resolve(false));
           req.end();
         });
-        if (!alive) { process.exit(1); }
+        if (!portAlive) {
+          // 第一次不可达：记录，等下个周期再试
+          if (!this._codexCheckFailures) this._codexCheckFailures = 0;
+          this._codexCheckFailures += 1;
+          if (this._codexCheckFailures >= 2) {
+            // 连续两次不可达才退出
+            this._codexCheckFailures = 0;
+            process.exit(1);
+          }
+        } else {
+          this._codexCheckFailures = 0;
+        }
       } catch {
         // 保持静默，主轮询和onConnectionLost会处理
       }

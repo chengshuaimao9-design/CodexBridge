@@ -1,4 +1,5 @@
 #!/bin/bash
+export CODEX_REAL_BIN="/Users/zhuanz/.nvm/versions/node/v24.16.0/bin/codex"
 export PATH="/Users/zhuanz/.nvm/versions/node/v24.16.0/bin:/usr/local/bin:/usr/bin:/bin"
 PROJECT="/Users/zhuanz/Desktop/Githup/运行项目/CodexBridge"
 OUTDIR="/Users/zhuanz/Desktop/Githup/微信端运营/生成的文件"

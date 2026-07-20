@@ -896,6 +896,8 @@ export class WeixinBridgeRuntime {
       event.text = this.expandCommandTemplate(String(event.text ?? ""));
       // 多轮对话引导
       this.enrichEventWithTurnContext(event);
+      // 自动中断当前正在处理的Codex回合，确保新消息不被阻塞
+      await this.tryInterruptCurrentTurn(event.externalScopeId);
       const response = await this.bridgeCoordinator.handleInboundEvent(event, {
         onProgress: async (progress) => {
           if (options.suppressProgressDelivery) {
